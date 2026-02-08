@@ -271,7 +271,7 @@ begin
 
     insert into public.match_presence (match_id, user_id, app_active, last_seen_at)
     values (p_match_id, v_user_id, true, now())
-    on conflict (match_id, user_id)
+    on conflict on constraint match_presence_pkey
     do update set app_active = true, last_seen_at = excluded.last_seen_at;
 
     insert into public.online_presence_v2 (user_id, app_active, last_seen_at, current_match_id)

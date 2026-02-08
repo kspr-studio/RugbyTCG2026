@@ -847,10 +847,10 @@ public class GameView extends View {
         if (lower.contains("client_upgrade_required")) {
             return "Multiplayer update required.";
         }
-        if (lower.contains("join_match_v2")
-                || lower.contains("submit_match_action_v2")
-                || lower.contains("fetch_actions_since_v2")
-                || lower.contains("heartbeat_presence_v2")) {
+        if (isJoinMatchV2AmbiguousSqlError(lower)) {
+            return "Multiplayer backend SQL error. Run SQL patch 20260208_multiplayer_v2_join_match_fix.sql.";
+        }
+        if (isMissingMultiplayerV2RpcError(lower)) {
             return "Missing multiplayer v2 RPCs. Run SQL patch 20260208_multiplayer_v2_authority.sql.";
         }
         if (lower.contains("http 300") || lower.contains("pgrst203") || lower.contains("multiple choices")) {
@@ -875,6 +875,27 @@ public class GameView extends View {
             return "Unable to reach multiplayer servers.";
         }
         return "Unable to sync online match.";
+    }
+
+    private boolean isMissingMultiplayerV2RpcError(String lower) {
+        if (lower == null || lower.isEmpty()) return false;
+        boolean referencesV2Rpc = lower.contains("submit_match_action_v2")
+                || lower.contains("join_match_v2")
+                || lower.contains("fetch_actions_since_v2")
+                || lower.contains("heartbeat_presence_v2");
+        if (!referencesV2Rpc) return false;
+        return lower.contains("pgrst202")
+                || lower.contains("42883")
+                || lower.contains("could not find the function")
+                || (lower.contains("function") && lower.contains("does not exist"));
+    }
+
+    private boolean isJoinMatchV2AmbiguousSqlError(String lower) {
+        if (lower == null || lower.isEmpty()) return false;
+        if (!lower.contains("join_match_v2")) return false;
+        return lower.contains("42702")
+                || lower.contains("column reference \"match_id\" is ambiguous")
+                || lower.contains("column reference 'match_id' is ambiguous");
     }
 
     private String mapActionRejectionBanner(String fallbackText, String reason) {
