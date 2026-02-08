@@ -49,6 +49,7 @@ public class GameActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         hideSystemBars();
+        applyBackgroundMusicVolume();
         startBackgroundMusic();
     }
 
@@ -80,9 +81,10 @@ public class GameActivity extends AppCompatActivity {
         try (AssetFileDescriptor afd = getAssets().openFd("snd/bg.mp3")) {
             bgPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
             bgPlayer.setLooping(true);
-            bgPlayer.setVolume(0.8f, 0.8f);
+            applyBackgroundMusicVolume();
             bgPlayer.setOnPreparedListener(mp -> {
                 bgPrepared = true;
+                applyBackgroundMusicVolume();
                 if (resumePlaybackRequested && !mp.isPlaying()) {
                     mp.start();
                 }
@@ -101,6 +103,7 @@ public class GameActivity extends AppCompatActivity {
 
     private void startBackgroundMusic() {
         if (bgPlayer == null) return;
+        applyBackgroundMusicVolume();
         if (bgPrepared) {
             if (!bgPlayer.isPlaying()) {
                 bgPlayer.start();
@@ -120,6 +123,12 @@ public class GameActivity extends AppCompatActivity {
         }
         bgPrepared = false;
         resumePlaybackRequested = false;
+    }
+
+    private void applyBackgroundMusicVolume() {
+        if (bgPlayer == null) return;
+        float volume = SettingsPrefs.getCrowdVolumeLevel(this);
+        bgPlayer.setVolume(volume, volume);
     }
 
     private void hideSystemBars() {

@@ -175,6 +175,9 @@ public class InputController {
                     if (controller.isOnlineGameplayMode()) {
                         return true;
                     }
+                    if (controller.isMatchBannerDismissBlocked()) {
+                        return true;
+                    }
                     controller.startNewMatch();
                     return true;
                 }

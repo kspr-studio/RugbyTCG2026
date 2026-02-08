@@ -847,11 +847,32 @@ public class GameView extends View {
         if (lower.contains("client_upgrade_required")) {
             return "Multiplayer update required.";
         }
+        if (lower.contains("join_match_v2")
+                || lower.contains("submit_match_action_v2")
+                || lower.contains("fetch_actions_since_v2")
+                || lower.contains("heartbeat_presence_v2")) {
+            return "Missing multiplayer v2 RPCs. Run SQL patch 20260208_multiplayer_v2_authority.sql.";
+        }
+        if (lower.contains("http 300") || lower.contains("pgrst203") || lower.contains("multiple choices")) {
+            return "Duplicate submit_match_action RPC signatures detected. Re-run SQL patch 20260206_online_match_actions.sql.";
+        }
         if (lower.contains("match_not_found")) {
             return "Match no longer exists.";
         }
         if (lower.contains("not_match_participant")) {
             return "You are not in this match.";
+        }
+        if (lower.contains("401")
+                || lower.contains("jwt")
+                || lower.contains("token")
+                || lower.contains("not_authenticated")) {
+            return "Multiplayer session expired. Please try again.";
+        }
+        if (lower.contains("unable to resolve host")
+                || lower.contains("failed to connect")
+                || lower.contains("timeout")
+                || lower.contains("network is unreachable")) {
+            return "Unable to reach multiplayer servers.";
         }
         return "Unable to sync online match.";
     }

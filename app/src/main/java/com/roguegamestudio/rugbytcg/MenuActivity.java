@@ -1,22 +1,42 @@
 package com.roguegamestudio.rugbytcg;
 
 import android.app.AlertDialog;
+import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.provider.Settings;
 import android.text.InputType;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -28,42 +48,69 @@ import com.roguegamestudio.rugbytcg.multiplayer.SupabaseService;
 
 import org.json.JSONObject;
 
+import java.io.InputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MenuActivity extends AppCompatActivity {
     private static final String PREFS = "rugby_prefs";
     private static final String KEY_TUTORIAL_DONE = "tutorial_done";
+    private static final String ASSET_MAIN_MENU = "mainmenu.png";
+    private static final String ASSET_BTN_SINGLE = "buttons/btn_single.png";
+    private static final String ASSET_BTN_MULTI = "buttons/btn_multi.png";
+    private static final String ASSET_BTN_TUTORIAL = "buttons/btn_tutorial.png";
+    private static final String ASSET_BTN_SETTINGS = "buttons/btn_settings.png";
+    private static final String ASSET_BTN_ONLINE = "buttons/btn_online.png";
+    private static final String UPDATE_APK_URL = "https://raw.githubusercontent.com/rikki3/roguegamestudio/refs/heads/main/minisurvivor/com.roguegamestudio.rugbytcg.apk";
+    private static final String UPDATE_APK_FILE_NAME = "com.roguegamestudio.rugbytcg.apk";
+    private static final int REQ_UNKNOWN_APP_SOURCES = 7601;
+    private static final long VERSION_CHECK_DEBOUNCE_MS = 1_500L;
     private static final long CHALLENGE_POLL_MS = 4_000L;
     private static final long READY_POLL_MS = 1_500L;
     private static final long PRESENCE_POLL_MS = 7_000L;
+    static final int VERSION_STATE_UNKNOWN = 0;
+    static final int VERSION_STATE_UP_TO_DATE = 1;
+    static final int VERSION_STATE_OUTDATED = 2;
 
     private final ExecutorService authExecutor = Executors.newSingleThreadExecutor();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
 
     private GuestAuthManager guestAuthManager;
     private SupabaseService supabaseService;
+    private DownloadManager downloadManager;
+    private BroadcastReceiver updateDownloadReceiver;
 
     private TextView onlineStatusText;
     private TextView matchStatusText;
     private TextView onlineCountText;
-    private Button publicMatchButton;
-    private Button challengeButton;
-    private Button forfeitMatchButton;
+    private TextView onlinePlateIdText;
+    private TextView versionText;
+    private ImageButton multiplayerButton;
+    private ImageButton onlinePlateButton;
+    private ImageView onlinePlateImage;
 
     private SupabaseProfile currentProfile;
     private GuestAuthManager.AuthState currentAuthState;
     private SupabaseService.ActiveMatch currentActiveMatch;
+    private SupabaseService.VersionStatus lastVersionStatus;
 
     private boolean viewDestroyed = false;
+    private boolean authBootstrapInFlight = false;
+    private boolean versionCheckInFlight = false;
+    private boolean updateReceiverRegistered = false;
     private boolean incomingDialogShowing = false;
     private boolean activeMatchDialogShowing = false;
     private String lastIncomingChallengeId = null;
     private String lastActiveMatchDialogId = null;
+    private String lastOnlinePublicId = null;
     private AlertDialog waitingForOpponentDialog;
     private String waitingForOpponentMatchId;
     private boolean launchingOnlineMatch = false;
+    private int versionGateState = VERSION_STATE_UNKNOWN;
     private int currentOnlinePlayerCount = -1;
+    private long lastVersionCheckElapsedMs = 0L;
+    private long pendingUpdateDownloadId = -1L;
+    private long pendingInstallDownloadId = -1L;
 
     private final Runnable challengePollTask = new Runnable() {
         @Override
@@ -91,21 +138,37 @@ public class MenuActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         guestAuthManager = new GuestAuthManager(this);
         supabaseService = new SupabaseService(BuildConfig.SUPABASE_URL, BuildConfig.SUPABASE_PUBLISHABLE_KEY);
+        downloadManager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        initUpdateDownloadReceiver();
         setContentView(buildMenuView());
         hideSystemBars();
-        bootstrapGuestSession();
+        setVersionLabelState(VERSION_STATE_UNKNOWN);
+        updateOnlinePlateUi(false, null);
+        runVersionGateCheck(true);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         hideSystemBars();
-        ensureOnlinePresenceTracking();
-        scheduleChallengePoll(500L);
+        registerUpdateDownloadReceiver();
+        if (pendingInstallDownloadId > 0L && canRequestPackageInstallsNow()) {
+            installDownloadedApk(pendingInstallDownloadId);
+        }
+        if (versionGateState == VERSION_STATE_UP_TO_DATE) {
+            ensureOnlinePresenceTracking();
+            scheduleChallengePoll(500L);
+            bootstrapGuestSession();
+        } else {
+            stopOnlinePresenceTracking();
+            uiHandler.removeCallbacks(challengePollTask);
+            runVersionGateCheck(false);
+        }
     }
 
     @Override
     protected void onPause() {
+        unregisterUpdateDownloadReceiver();
         stopOnlinePresenceTracking();
         uiHandler.removeCallbacks(challengePollTask);
         uiHandler.removeCallbacks(readyPollTask);
@@ -119,8 +182,19 @@ public class MenuActivity extends AppCompatActivity {
         uiHandler.removeCallbacks(readyPollTask);
         dismissWaitingForOpponentDialog();
         stopOnlinePresenceTracking();
+        unregisterUpdateDownloadReceiver();
         authExecutor.shutdownNow();
         super.onDestroy();
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_UNKNOWN_APP_SOURCES) return;
+        if (pendingInstallDownloadId > 0L && canRequestPackageInstallsNow()) {
+            installDownloadedApk(pendingInstallDownloadId);
+        }
     }
 
     @Override
@@ -130,122 +204,133 @@ public class MenuActivity extends AppCompatActivity {
     }
 
     private View buildMenuView() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setGravity(Gravity.CENTER_HORIZONTAL);
-        root.setBackgroundColor(Color.rgb(15, 30, 20));
+        FrameLayout root = new FrameLayout(this);
 
-        int pad = dp(24);
-        root.setPadding(pad, pad * 2, pad, pad);
+        ImageView background = new ImageView(this);
+        background.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        Bitmap menuBg = loadAssetBitmap(ASSET_MAIN_MENU);
+        if (menuBg != null) {
+            background.setImageBitmap(menuBg);
+        } else {
+            background.setBackgroundColor(Color.rgb(15, 30, 20));
+        }
+        root.addView(background, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
 
-        TextView title = new TextView(this);
-        title.setText("RUGBY TCG v" + BuildConfig.VERSION_NAME);
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
-        title.setGravity(Gravity.CENTER);
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int menuButtonWidth = Math.round(screenWidth * 0.58f * 0.75f);
+        int menuButtonHeight = Math.round(menuButtonWidth * (104f / 300f));
+        int onlinePlateWidth = Math.round(screenWidth * 0.78f);
+        int onlinePlateHeight = Math.round(onlinePlateWidth * (245f / 1427f));
 
-        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+        LinearLayout stack = new LinearLayout(this);
+        stack.setOrientation(LinearLayout.VERTICAL);
+        stack.setGravity(Gravity.CENTER_HORIZONTAL);
+        FrameLayout.LayoutParams stackParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
         );
-        titleParams.bottomMargin = dp(24);
-        root.addView(title, titleParams);
+        stackParams.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        stackParams.bottomMargin = dp(10);
+        root.addView(stack, stackParams);
 
+        ImageButton singlePlayer = createMenuButton(ASSET_BTN_SINGLE, menuButtonWidth, menuButtonHeight);
+        singlePlayer.setContentDescription("Single player");
+        multiplayerButton = createMenuButton(ASSET_BTN_MULTI, menuButtonWidth, menuButtonHeight);
+        multiplayerButton.setContentDescription("Multiplayer");
+        ImageButton tutorialBtn = createMenuButton(ASSET_BTN_TUTORIAL, menuButtonWidth, menuButtonHeight);
+        tutorialBtn.setContentDescription("Tutorial");
+        ImageButton settingsBtn = createMenuButton(ASSET_BTN_SETTINGS, menuButtonWidth, menuButtonHeight);
+        settingsBtn.setContentDescription("Settings");
+        onlinePlateButton = createMenuButton(ASSET_BTN_ONLINE, onlinePlateWidth, onlinePlateHeight);
+        onlinePlateButton.setContentDescription("Online ID");
+        onlinePlateImage = onlinePlateButton;
+        onlinePlateIdText = new TextView(this);
+        onlinePlateIdText.setText("");
+        onlinePlateIdText.setTextColor(Color.rgb(25, 25, 25));
+        onlinePlateIdText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        onlinePlateIdText.setGravity(Gravity.CENTER);
+        onlinePlateIdText.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD);
+
+        FrameLayout onlinePlateContainer = new FrameLayout(this);
+        onlinePlateContainer.addView(onlinePlateButton, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+        ));
+        onlinePlateContainer.addView(onlinePlateIdText, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER
+        ));
+        onlinePlateContainer.setLayoutParams(stackedParams(onlinePlateWidth, onlinePlateHeight, 0));
+
+        stack.addView(singlePlayer, stackedParams(menuButtonWidth, menuButtonHeight, dp(4)));
+        stack.addView(multiplayerButton, stackedParams(menuButtonWidth, menuButtonHeight, dp(4)));
+        stack.addView(tutorialBtn, stackedParams(menuButtonWidth, menuButtonHeight, dp(4)));
+        stack.addView(settingsBtn, stackedParams(menuButtonWidth, menuButtonHeight, dp(6)));
+        stack.addView(onlinePlateContainer, stackedParams(onlinePlateWidth, onlinePlateHeight, 0));
+
+        setMultiplayerButtonEnabled(false);
+        updateOnlinePlateUi(false, null);
+
+        versionText = new TextView(this);
+        versionText.setText("v" + BuildConfig.VERSION_NAME);
+        versionText.setTextColor(Color.WHITE);
+        versionText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        versionText.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.NORMAL);
+        versionText.setPadding(dp(3), dp(2), dp(3), dp(2));
+        versionText.setBackgroundColor(Color.argb(80, 0, 0, 0));
+        versionText.setOnClickListener(v -> {
+            if (versionGateState == VERSION_STATE_OUTDATED) {
+                showUpdatePromptIfOutdated();
+            }
+        });
+        FrameLayout.LayoutParams versionParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+        );
+        versionParams.gravity = Gravity.TOP | Gravity.END;
+        versionParams.topMargin = dp(10);
+        versionParams.rightMargin = dp(10);
+        root.addView(versionText, versionParams);
+
+        // Hidden text labels retained for multiplayer state bookkeeping while main menu text is hidden.
         onlineStatusText = new TextView(this);
-        onlineStatusText.setText("ONLINE: CONNECTING...");
-        onlineStatusText.setTextColor(Color.rgb(185, 220, 200));
-        onlineStatusText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        onlineStatusText.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        statusParams.bottomMargin = dp(16);
-        root.addView(onlineStatusText, statusParams);
-
         matchStatusText = new TextView(this);
-        matchStatusText.setText("");
-        matchStatusText.setTextColor(Color.rgb(235, 210, 130));
-        matchStatusText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        matchStatusText.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams matchStatusParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        matchStatusParams.bottomMargin = dp(12);
-        root.addView(matchStatusText, matchStatusParams);
-
-        Button singlePlayer = new Button(this);
-        singlePlayer.setText("SINGLE PLAYER");
-        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        btnParams.bottomMargin = dp(12);
-        root.addView(singlePlayer, btnParams);
-
-        Button tutorialBtn = new Button(this);
-        tutorialBtn.setText("HOW TO PLAY");
-        root.addView(tutorialBtn, btnParams);
-
-        publicMatchButton = new Button(this);
-        publicMatchButton.setText("PUBLIC MATCHMAKING");
-        publicMatchButton.setEnabled(false);
-        root.addView(publicMatchButton, btnParams);
-
-        challengeButton = new Button(this);
-        challengeButton.setText("CHALLENGE BY ID");
-        challengeButton.setEnabled(false);
-        root.addView(challengeButton, btnParams);
-
-        forfeitMatchButton = new Button(this);
-        forfeitMatchButton.setText("FORFEIT ACTIVE MATCH");
-        forfeitMatchButton.setEnabled(false);
-        forfeitMatchButton.setVisibility(View.GONE);
-        root.addView(forfeitMatchButton, btnParams);
-
-        View spacer = new View(this);
-        LinearLayout.LayoutParams spacerParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-        );
-        root.addView(spacer, spacerParams);
-
         onlineCountText = new TextView(this);
-        onlineCountText.setText("");
-        onlineCountText.setTextColor(Color.rgb(175, 205, 190));
-        onlineCountText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        onlineCountText.setGravity(Gravity.CENTER);
-        onlineCountText.setVisibility(View.GONE);
-        LinearLayout.LayoutParams onlineCountParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        onlineCountParams.topMargin = dp(8);
-        root.addView(onlineCountText, onlineCountParams);
 
         singlePlayer.setOnClickListener(v -> {
             boolean done = getSharedPreferences(PREFS, MODE_PRIVATE)
                     .getBoolean(KEY_TUTORIAL_DONE, false);
             startGame(!done);
         });
-
         tutorialBtn.setOnClickListener(v -> startGame(true));
-        publicMatchButton.setOnClickListener(v -> onPublicMatchmakingSelected());
-        challengeButton.setOnClickListener(v -> onChallengeByIdSelected());
-        forfeitMatchButton.setOnClickListener(v -> onForfeitActiveMatchSelected());
+        multiplayerButton.setOnClickListener(v -> onMultiplayerSelected());
+        settingsBtn.setOnClickListener(v -> showSettingsDialog());
+        onlinePlateButton.setOnClickListener(v -> copyOnlineIdToClipboard());
+
+        attachPushAnimation(singlePlayer);
+        attachPushAnimation(multiplayerButton);
+        attachPushAnimation(tutorialBtn);
+        attachPushAnimation(settingsBtn);
+        attachPushAnimation(onlinePlateButton);
 
         return root;
     }
 
     private void bootstrapGuestSession() {
+        if (versionGateState != VERSION_STATE_UP_TO_DATE) return;
+        if (authBootstrapInFlight) return;
+        if (currentAuthState != null && currentProfile != null) return;
+        authBootstrapInFlight = true;
         authExecutor.execute(() -> {
             String statusLine;
             GuestAuthManager.AuthState authState = null;
             try {
                 authState = guestAuthManager.ensureGuestSession();
-                statusLine = "ONLINE ID: " + authState.profile.publicId;
+                statusLine = authState.profile.publicId;
             } catch (Exception e) {
                 String message = (e.getMessage() == null || e.getMessage().trim().isEmpty())
                         ? e.getClass().getSimpleName()
@@ -256,8 +341,18 @@ public class MenuActivity extends AppCompatActivity {
             GuestAuthManager.AuthState finalAuthState = authState;
             String finalStatusLine = statusLine;
             runOnUiThread(() -> {
+                authBootstrapInFlight = false;
                 if (viewDestroyed || isFinishing()) return;
-                if (finalAuthState != null) {
+                if (versionGateState != VERSION_STATE_UP_TO_DATE) {
+                    currentAuthState = null;
+                    currentProfile = null;
+                    currentActiveMatch = null;
+                    stopOnlinePresenceTracking();
+                    refreshMultiplayerButtons();
+                    updateOnlinePlateUi(false, null);
+                    return;
+                }
+                if (finalAuthState != null && finalAuthState.profile != null) {
                     applyAuthState(finalAuthState);
                     ensureOnlinePresenceTracking();
                 } else {
@@ -266,6 +361,7 @@ public class MenuActivity extends AppCompatActivity {
                     currentActiveMatch = null;
                     stopOnlinePresenceTracking();
                     refreshMultiplayerButtons();
+                    updateOnlinePlateUi(false, null);
                 }
                 onlineStatusText.setText(finalStatusLine);
                 scheduleChallengePoll(1_000L);
@@ -283,6 +379,32 @@ public class MenuActivity extends AppCompatActivity {
             return;
         }
         Toast.makeText(this, "Public matchmaking is next.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void onMultiplayerSelected() {
+        if (versionGateState != VERSION_STATE_UP_TO_DATE) {
+            if (versionGateState == VERSION_STATE_OUTDATED) {
+                showUpdatePromptIfOutdated();
+            } else {
+                Toast.makeText(this, "Checking version. Try again in a moment.", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        if (currentProfile == null) {
+            Toast.makeText(this, "Still connecting to multiplayer services.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (waitingForOpponentMatchId != null) {
+            Toast.makeText(this, "Waiting for other player to start.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (currentActiveMatch != null) {
+            if (!activeMatchDialogShowing) {
+                showActiveMatchReadyDialog(currentActiveMatch);
+            }
+            return;
+        }
+        onChallengeByIdSelected();
     }
 
     private void onChallengeByIdSelected() {
@@ -340,8 +462,7 @@ public class MenuActivity extends AppCompatActivity {
     }
 
     private void sendChallenge(String target) {
-        publicMatchButton.setEnabled(false);
-        challengeButton.setEnabled(false);
+        setMultiplayerButtonEnabled(false);
         authExecutor.execute(() -> {
             try {
                 GuestAuthManager.AuthState authState = guestAuthManager.ensureGuestSession();
@@ -375,6 +496,9 @@ public class MenuActivity extends AppCompatActivity {
 
     private void pollIncomingChallenges() {
         if (viewDestroyed || isFinishing()) return;
+        if (versionGateState != VERSION_STATE_UP_TO_DATE) {
+            return;
+        }
         if (currentAuthState == null || currentProfile == null) {
             scheduleChallengePoll(CHALLENGE_POLL_MS);
             return;
@@ -499,10 +623,14 @@ public class MenuActivity extends AppCompatActivity {
     private void applyAuthState(GuestAuthManager.AuthState authState) {
         currentAuthState = authState;
         currentProfile = authState.profile;
-        if (authState.profile != null) {
-            onlineStatusText.setText("ONLINE ID: " + authState.profile.publicId);
+        if (authState.profile != null && versionGateState == VERSION_STATE_UP_TO_DATE) {
+            onlineStatusText.setText(authState.profile.publicId);
+            lastOnlinePublicId = authState.profile.publicId;
+            updateOnlinePlateUi(true, authState.profile.publicId);
         } else {
             onlineStatusText.setText("ONLINE: OFFLINE");
+            lastOnlinePublicId = null;
+            updateOnlinePlateUi(false, null);
         }
         refreshMultiplayerButtons();
         refreshOnlineCountText();
@@ -522,17 +650,28 @@ public class MenuActivity extends AppCompatActivity {
     }
 
     private void refreshMultiplayerButtons() {
+        boolean versionOk = versionGateState == VERSION_STATE_UP_TO_DATE;
         boolean connected = currentProfile != null;
         boolean inMatch = currentActiveMatch != null;
         boolean waitingForOpponent = waitingForOpponentMatchId != null;
-        publicMatchButton.setEnabled(connected && !inMatch && !waitingForOpponent);
-        challengeButton.setEnabled(connected && !inMatch && !waitingForOpponent);
-        forfeitMatchButton.setEnabled(connected && (inMatch || waitingForOpponent));
-        forfeitMatchButton.setVisibility((inMatch || waitingForOpponent) ? View.VISIBLE : View.GONE);
+        if (!versionOk || !connected) {
+            setMultiplayerButtonEnabled(false);
+            updateOnlinePlateUi(false, null);
+            return;
+        }
+        setMultiplayerButtonEnabled(!waitingForOpponent || inMatch);
+        if (multiplayerButton != null && (inMatch || waitingForOpponent)) {
+            multiplayerButton.setAlpha(0.75f);
+        }
+        updateOnlinePlateUi(true, currentProfile.publicId);
     }
 
     private void ensureOnlinePresenceTracking() {
         if (viewDestroyed || isFinishing()) return;
+        if (versionGateState != VERSION_STATE_UP_TO_DATE) {
+            stopOnlinePresenceTracking();
+            return;
+        }
         if (currentAuthState == null
                 || currentAuthState.session == null
                 || currentProfile == null
@@ -555,6 +694,10 @@ public class MenuActivity extends AppCompatActivity {
 
     private void pollOnlinePresence() {
         if (viewDestroyed || isFinishing()) return;
+        if (versionGateState != VERSION_STATE_UP_TO_DATE) {
+            schedulePresencePoll(PRESENCE_POLL_MS);
+            return;
+        }
         if (currentAuthState == null || currentAuthState.session == null || currentProfile == null) {
             schedulePresencePoll(PRESENCE_POLL_MS);
             return;
@@ -600,7 +743,7 @@ public class MenuActivity extends AppCompatActivity {
 
     private void refreshOnlineCountText() {
         if (onlineCountText == null) return;
-        if (currentProfile == null) {
+        if (currentProfile == null || versionGateState != VERSION_STATE_UP_TO_DATE) {
             onlineCountText.setVisibility(View.GONE);
             onlineCountText.setText("");
             return;
@@ -616,7 +759,7 @@ public class MenuActivity extends AppCompatActivity {
 
     private void scheduleChallengePoll(long delayMs) {
         uiHandler.removeCallbacks(challengePollTask);
-        if (!viewDestroyed) {
+        if (!viewDestroyed && versionGateState == VERSION_STATE_UP_TO_DATE) {
             uiHandler.postDelayed(challengePollTask, delayMs);
         }
     }
@@ -798,7 +941,7 @@ public class MenuActivity extends AppCompatActivity {
     }
 
     private void forfeitActiveMatch() {
-        forfeitMatchButton.setEnabled(false);
+        setMultiplayerButtonEnabled(false);
         dismissWaitingForOpponentDialog();
         authExecutor.execute(() -> {
             try {
@@ -834,6 +977,399 @@ public class MenuActivity extends AppCompatActivity {
         });
     }
 
+    static int determineVersionGateState(SupabaseService.VersionStatus status) {
+        if (status == null) return VERSION_STATE_UNKNOWN;
+        if (status.accepted && status.upToDate) return VERSION_STATE_UP_TO_DATE;
+        String reason = status.reason == null ? "" : status.reason.toLowerCase();
+        if (reason.contains("client_upgrade_required")) return VERSION_STATE_OUTDATED;
+        if (status.latestClientVersion > 0 && status.latestClientVersion != BuildConfig.VERSION_CODE) {
+            return VERSION_STATE_OUTDATED;
+        }
+        return VERSION_STATE_UNKNOWN;
+    }
+
+    static boolean shouldAllowOnlineBootstrap(int state) {
+        return state == VERSION_STATE_UP_TO_DATE;
+    }
+
+    private void runVersionGateCheck(boolean force) {
+        if (viewDestroyed || isFinishing()) return;
+        if (versionCheckInFlight) return;
+        long now = SystemClock.elapsedRealtime();
+        if (!force && (now - lastVersionCheckElapsedMs) < VERSION_CHECK_DEBOUNCE_MS) return;
+        lastVersionCheckElapsedMs = now;
+        versionCheckInFlight = true;
+
+        versionGateState = VERSION_STATE_UNKNOWN;
+        setVersionLabelState(versionGateState);
+        setMultiplayerButtonEnabled(false);
+        updateOnlinePlateUi(false, null);
+
+        authExecutor.execute(() -> {
+            SupabaseService.VersionStatus status = null;
+            Exception error = null;
+            try {
+                status = supabaseService.fetchClientVersionStatusPublic(BuildConfig.VERSION_CODE);
+            } catch (Exception e) {
+                error = e;
+            }
+
+            SupabaseService.VersionStatus statusFinal = status;
+            Exception errorFinal = error;
+            runOnUiThread(() -> {
+                if (viewDestroyed || isFinishing()) return;
+                versionCheckInFlight = false;
+                lastVersionStatus = statusFinal;
+                int newState = determineVersionGateState(statusFinal);
+                versionGateState = newState;
+                setVersionLabelState(newState);
+
+                if (shouldAllowOnlineBootstrap(newState)) {
+                    if (currentProfile != null) {
+                        updateOnlinePlateUi(true, currentProfile.publicId);
+                        refreshMultiplayerButtons();
+                        ensureOnlinePresenceTracking();
+                        scheduleChallengePoll(300L);
+                    } else {
+                        bootstrapGuestSession();
+                    }
+                    return;
+                }
+
+                currentAuthState = null;
+                currentProfile = null;
+                currentActiveMatch = null;
+                waitingForOpponentMatchId = null;
+                dismissWaitingForOpponentDialog();
+                stopOnlinePresenceTracking();
+                uiHandler.removeCallbacks(challengePollTask);
+                refreshMultiplayerButtons();
+                updateOnlinePlateUi(false, null);
+
+                if (newState == VERSION_STATE_OUTDATED) {
+                    onlineStatusText.setText("UPDATE REQUIRED");
+                } else if (errorFinal != null) {
+                    onlineStatusText.setText("ONLINE: OFFLINE (" + summarizeError(errorFinal) + ")");
+                } else {
+                    onlineStatusText.setText("ONLINE: OFFLINE");
+                }
+            });
+        });
+    }
+
+    private void setVersionLabelState(int state) {
+        if (versionText == null) return;
+        versionText.setText("v" + BuildConfig.VERSION_NAME);
+        if (state == VERSION_STATE_OUTDATED) {
+            versionText.setTextColor(Color.rgb(230, 75, 75));
+            versionText.setClickable(true);
+            versionText.setAlpha(1f);
+        } else {
+            versionText.setTextColor(Color.WHITE);
+            versionText.setClickable(false);
+            versionText.setAlpha(0.92f);
+        }
+    }
+
+    private void updateOnlinePlateUi(boolean onlineConnected, String publicId) {
+        if (onlinePlateButton == null || onlinePlateImage == null || onlinePlateIdText == null) return;
+        boolean active = onlineConnected
+                && versionGateState == VERSION_STATE_UP_TO_DATE
+                && !isBlank(publicId);
+        if (active) {
+            onlinePlateImage.setColorFilter(null);
+            onlinePlateImage.setAlpha(1f);
+            onlinePlateButton.setEnabled(true);
+            onlinePlateIdText.setText(publicId.trim());
+            onlinePlateIdText.setAlpha(1f);
+            lastOnlinePublicId = publicId.trim();
+            return;
+        }
+
+        ColorMatrix matrix = new ColorMatrix();
+        matrix.setSaturation(0f);
+        onlinePlateImage.setColorFilter(new ColorMatrixColorFilter(matrix));
+        onlinePlateImage.setAlpha(0.7f);
+        onlinePlateButton.setEnabled(false);
+        onlinePlateIdText.setText("");
+        onlinePlateIdText.setAlpha(0.9f);
+        lastOnlinePublicId = null;
+    }
+
+    private void copyOnlineIdToClipboard() {
+        if (!onlinePlateButton.isEnabled() || isBlank(lastOnlinePublicId)) return;
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) return;
+        ClipData clip = ClipData.newPlainText("online_id", lastOnlinePublicId);
+        clipboard.setPrimaryClip(clip);
+        Toast.makeText(this, "ID copied", Toast.LENGTH_SHORT).show();
+    }
+
+    private void attachPushAnimation(View view) {
+        if (view == null) return;
+        view.setOnTouchListener((v, event) -> {
+            if (!v.isEnabled()) return false;
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                v.animate()
+                        .scaleX(0.95f)
+                        .scaleY(0.95f)
+                        .translationY(dp(1))
+                        .setDuration(70)
+                        .start();
+            } else if (action == MotionEvent.ACTION_UP
+                    || action == MotionEvent.ACTION_CANCEL
+                    || action == MotionEvent.ACTION_OUTSIDE) {
+                v.animate()
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .translationY(0f)
+                        .setDuration(110)
+                        .start();
+            }
+            return false;
+        });
+    }
+
+    private void showUpdatePromptIfOutdated() {
+        if (versionGateState != VERSION_STATE_OUTDATED) return;
+        int latest = lastVersionStatus != null ? lastVersionStatus.latestClientVersion : -1;
+        String latestText = latest > 0 ? String.valueOf(latest) : "unknown";
+        String message = "Current: v" + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")\n"
+                + "Latest: " + latestText + "\n\nUpdate game now?";
+        new AlertDialog.Builder(this)
+                .setTitle("Update Required")
+                .setMessage(message)
+                .setNegativeButton("No", null)
+                .setPositiveButton("Yes", (d, w) -> startUpdateDownload())
+                .show();
+    }
+
+    private void startUpdateDownload() {
+        if (downloadManager == null) {
+            Toast.makeText(this, "Download manager unavailable.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(UPDATE_APK_URL));
+            request.setTitle("Rugby TCG Update");
+            request.setDescription("Downloading latest version");
+            request.setMimeType("application/vnd.android.package-archive");
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setAllowedOverMetered(true);
+            request.setAllowedOverRoaming(true);
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, UPDATE_APK_FILE_NAME);
+            pendingUpdateDownloadId = downloadManager.enqueue(request);
+            Toast.makeText(this, "Update download started.", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "Failed to start download: " + summarizeError(e), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void initUpdateDownloadReceiver() {
+        updateDownloadReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) return;
+                if (!DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(intent.getAction())) return;
+                long downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
+                if (downloadId > 0L) {
+                    handleUpdateDownloadComplete(downloadId);
+                }
+            }
+        };
+    }
+
+    private void registerUpdateDownloadReceiver() {
+        if (updateReceiverRegistered || updateDownloadReceiver == null) return;
+        IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(updateDownloadReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(updateDownloadReceiver, filter);
+        }
+        updateReceiverRegistered = true;
+    }
+
+    private void unregisterUpdateDownloadReceiver() {
+        if (!updateReceiverRegistered || updateDownloadReceiver == null) return;
+        try {
+            unregisterReceiver(updateDownloadReceiver);
+        } catch (Exception ignored) {
+        }
+        updateReceiverRegistered = false;
+    }
+
+    private void handleUpdateDownloadComplete(long downloadId) {
+        if (downloadId != pendingUpdateDownloadId) return;
+        if (getDownloadedApkUri(downloadId) == null) {
+            Toast.makeText(this, "Update download failed.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!canRequestPackageInstallsNow()) {
+            pendingInstallDownloadId = downloadId;
+            openUnknownAppSourcesSettings();
+            return;
+        }
+        installDownloadedApk(downloadId);
+    }
+
+    private Uri getDownloadedApkUri(long downloadId) {
+        if (downloadManager == null || downloadId <= 0L) return null;
+        Cursor cursor = null;
+        try {
+            DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
+            cursor = downloadManager.query(query);
+            if (cursor == null || !cursor.moveToFirst()) return null;
+            int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+            if (status != DownloadManager.STATUS_SUCCESSFUL) return null;
+            return downloadManager.getUriForDownloadedFile(downloadId);
+        } catch (Exception ignored) {
+            return null;
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+    }
+
+    private void installDownloadedApk(long downloadId) {
+        Uri apkUri = getDownloadedApkUri(downloadId);
+        if (apkUri == null) {
+            Toast.makeText(this, "Unable to open downloaded update.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        pendingInstallDownloadId = -1L;
+        Intent installIntent = new Intent(Intent.ACTION_VIEW);
+        installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+        installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(installIntent);
+        } catch (Exception e) {
+            Toast.makeText(this, "Installer unavailable.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private boolean canRequestPackageInstallsNow() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true;
+        return getPackageManager().canRequestPackageInstalls();
+    }
+
+    private void openUnknownAppSourcesSettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        Intent intent = new Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:" + getPackageName())
+        );
+        try {
+            startActivityForResult(intent, REQ_UNKNOWN_APP_SOURCES);
+        } catch (Exception e) {
+            Toast.makeText(this, "Enable install unknown apps for this app.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private String summarizeError(Exception e) {
+        if (e == null) return "unknown error";
+        String message = e.getMessage();
+        if (message == null || message.trim().isEmpty()) return e.getClass().getSimpleName();
+        return message.trim();
+    }
+
+    private void showSettingsDialog() {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(12), dp(20), dp(8));
+
+        TextView crowdLabel = new TextView(this);
+        crowdLabel.setText("Crowd Volume");
+        crowdLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        crowdLabel.setTextColor(Color.BLACK);
+        content.addView(crowdLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        TextView crowdValue = new TextView(this);
+        crowdValue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        crowdValue.setTextColor(Color.DKGRAY);
+        crowdValue.setGravity(Gravity.END);
+        LinearLayout.LayoutParams valueParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        valueParams.topMargin = dp(4);
+        content.addView(crowdValue, valueParams);
+
+        SeekBar crowdSlider = new SeekBar(this);
+        crowdSlider.setMax(100);
+        int initialValue = SettingsPrefs.getCrowdVolumePercent(this);
+        crowdSlider.setProgress(initialValue);
+        crowdValue.setText(initialValue + "%");
+        LinearLayout.LayoutParams sliderParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        sliderParams.topMargin = dp(4);
+        content.addView(crowdSlider, sliderParams);
+
+        crowdSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int clamped = SettingsPrefs.clampPercent(progress);
+                crowdValue.setText(clamped + "%");
+                SettingsPrefs.setCrowdVolumePercent(MenuActivity.this, clamped);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+
+        new AlertDialog.Builder(this)
+                .setTitle("Settings")
+                .setView(content)
+                .setPositiveButton("Close", null)
+                .show();
+    }
+
+    private void setMultiplayerButtonEnabled(boolean enabled) {
+        if (multiplayerButton == null) return;
+        multiplayerButton.setEnabled(enabled);
+        multiplayerButton.setAlpha(enabled ? 1f : 0.45f);
+    }
+
+    private ImageButton createMenuButton(String assetPath, int width, int height) {
+        ImageButton button = new ImageButton(this);
+        button.setBackgroundColor(Color.TRANSPARENT);
+        button.setScaleType(ImageView.ScaleType.FIT_XY);
+        button.setAdjustViewBounds(false);
+        button.setPadding(0, 0, 0, 0);
+        button.setMinimumWidth(0);
+        button.setMinimumHeight(0);
+        Bitmap bitmap = loadAssetBitmap(assetPath);
+        if (bitmap != null) {
+            button.setImageBitmap(bitmap);
+        }
+        button.setLayoutParams(stackedParams(width, height, 0));
+        return button;
+    }
+
+    private LinearLayout.LayoutParams stackedParams(int width, int height, int bottomMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(width, height);
+        params.bottomMargin = bottomMargin;
+        return params;
+    }
+
+    private Bitmap loadAssetBitmap(String assetPath) {
+        try (InputStream in = getAssets().open(assetPath)) {
+            return BitmapFactory.decodeStream(in);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private String mapChallengeError(Exception e) {
         String msg = e.getMessage();
         if (msg == null) return "Challenge request failed.";
@@ -848,6 +1384,9 @@ public class MenuActivity extends AppCompatActivity {
         if (lower.contains("not_challenge_target")) return "This challenge is not addressed to you.";
         if (lower.contains("expired")) return "Challenge expired.";
         if (lower.contains("client_upgrade_required")) return "Multiplayer update required.";
+        if (lower.contains("get_client_version_status_v1")) {
+            return "Missing version status RPC. Run SQL patch 20260208_public_version_status.sql.";
+        }
         if (lower.contains("forfeit_my_active_match")) {
             return "Missing RPC forfeit function. Run the SQL patch for forfeit_my_active_match.";
         }

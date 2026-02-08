@@ -19,26 +19,68 @@ public class GuestAuthManager {
         SupabaseSession session = store.load();
 
         if (session == null) {
-            session = service.signInAnonymously();
-            store.save(session);
+            session = signInAndPersist();
         } else if (isNearExpiry(session)) {
-            try {
-                session = service.refreshSession(session.refreshToken);
-                store.save(session);
-            } catch (Exception refreshFailure) {
-                session = service.signInAnonymously();
-                store.save(session);
-            }
+            session = refreshOrSignIn(session);
         }
 
-        SupabaseProfile profile = service.fetchProfile(session.accessToken, session.userId);
-        return new AuthState(session, profile);
+        try {
+            SupabaseProfile profile = service.fetchProfile(session.accessToken, session.userId);
+            return new AuthState(session, profile);
+        } catch (Exception profileFailure) {
+            SupabaseSession recovered = recoverSessionAfterProfileFailure(session, profileFailure);
+            SupabaseProfile profile = service.fetchProfile(recovered.accessToken, recovered.userId);
+            return new AuthState(recovered, profile);
+        }
+    }
+
+    private SupabaseSession refreshOrSignIn(SupabaseSession session) throws Exception {
+        if (session != null && !isBlank(session.refreshToken)) {
+            try {
+                SupabaseSession refreshed = service.refreshSession(session.refreshToken);
+                store.save(refreshed);
+                return refreshed;
+            } catch (Exception ignored) {
+            }
+        }
+        store.clear();
+        return signInAndPersist();
+    }
+
+    private SupabaseSession recoverSessionAfterProfileFailure(SupabaseSession session, Exception profileFailure)
+            throws Exception {
+        if (!isRecoverableSessionFailure(profileFailure)) {
+            throw profileFailure;
+        }
+        return refreshOrSignIn(session);
+    }
+
+    private SupabaseSession signInAndPersist() throws Exception {
+        SupabaseSession session = service.signInAnonymously();
+        store.save(session);
+        return session;
     }
 
     private boolean isNearExpiry(SupabaseSession session) {
         if (session.expiresAtEpochSeconds <= 0L) return true;
         long now = System.currentTimeMillis() / 1000L;
         return session.expiresAtEpochSeconds <= (now + SESSION_EXPIRY_SAFETY_WINDOW_SEC);
+    }
+
+    private boolean isRecoverableSessionFailure(Exception failure) {
+        if (failure == null || failure.getMessage() == null) return false;
+        String lower = failure.getMessage().toLowerCase();
+        return lower.contains("401")
+                || lower.contains("403")
+                || lower.contains("jwt")
+                || lower.contains("token")
+                || lower.contains("not_authenticated")
+                || lower.contains("invalid refresh token")
+                || lower.contains("no profile row found for user");
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 
     public static class AuthState {

@@ -26,6 +26,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         hideSystemBars();
+        applyBackgroundMusicVolume();
         startBackgroundMusic();
     }
 
@@ -59,7 +60,7 @@ public class MainActivity extends AppCompatActivity {
         try (AssetFileDescriptor afd = getAssets().openFd("snd/bg.mp3")) {
             bgPlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
             bgPlayer.setLooping(true);
-            bgPlayer.setVolume(0.8f, 0.8f);
+            applyBackgroundMusicVolume();
             bgPlayer.prepare();
         } catch (IOException e) {
             bgPlayer.release();
@@ -69,8 +70,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void startBackgroundMusic() {
         if (bgPlayer != null && !bgPlayer.isPlaying()) {
+            applyBackgroundMusicVolume();
             bgPlayer.start();
         }
+    }
+
+    private void applyBackgroundMusicVolume() {
+        if (bgPlayer == null) return;
+        float volume = SettingsPrefs.getCrowdVolumeLevel(this);
+        bgPlayer.setVolume(volume, volume);
     }
 
     private void hideSystemBars() {

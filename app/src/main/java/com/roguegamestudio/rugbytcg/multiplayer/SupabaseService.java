@@ -44,6 +44,23 @@ public class SupabaseService {
         this.publishableKey = publishableKey.trim();
     }
 
+    public VersionStatus fetchClientVersionStatusPublic(int clientVersionCode) throws IOException, JSONException {
+        JSONObject body = new JSONObject();
+        body.put("p_client_version", clientVersionCode);
+        JSONArray rows = postJsonArray(baseUrl + "/rest/v1/rpc/get_client_version_status_v1", body, null);
+        if (rows.length() <= 0) {
+            throw new IOException("get_client_version_status_v1 returned no rows");
+        }
+        JSONObject row = rows.getJSONObject(0);
+        return new VersionStatus(
+                row.optBoolean("accepted", false),
+                row.optString("reason", ""),
+                row.optInt("latest_client_version", 0),
+                row.optInt("min_supported_client_version", 0),
+                row.optBoolean("up_to_date", false)
+        );
+    }
+
     public SupabaseSession signInAnonymously() throws IOException, JSONException {
         JSONObject body = new JSONObject();
         body.put("data", new JSONObject());
@@ -893,6 +910,26 @@ public class SupabaseService {
             this.accepted = accepted;
             this.reason = reason;
             this.onlineCount = onlineCount;
+        }
+    }
+
+    public static class VersionStatus {
+        public final boolean accepted;
+        public final String reason;
+        public final int latestClientVersion;
+        public final int minSupportedClientVersion;
+        public final boolean upToDate;
+
+        public VersionStatus(boolean accepted,
+                             String reason,
+                             int latestClientVersion,
+                             int minSupportedClientVersion,
+                             boolean upToDate) {
+            this.accepted = accepted;
+            this.reason = reason;
+            this.latestClientVersion = latestClientVersion;
+            this.minSupportedClientVersion = minSupportedClientVersion;
+            this.upToDate = upToDate;
         }
     }
 

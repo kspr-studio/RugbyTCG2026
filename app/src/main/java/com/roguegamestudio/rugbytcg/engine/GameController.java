@@ -1,7 +1,6 @@
 package com.roguegamestudio.rugbytcg.engine;
 
 import android.media.ToneGenerator;
-import android.os.SystemClock;
 import android.view.MotionEvent;
 
 import com.roguegamestudio.rugbytcg.Card;
@@ -161,7 +160,7 @@ public class GameController implements AiController.Delegate {
         matchEngine.resetMatch(state, 3L * 60L * 1000L);
 
         playerStarts = rng.nextBoolean();
-        long now = SystemClock.uptimeMillis();
+        long now = timeSource.nowUptimeMs();
         showBanner(playerStarts ? "HEADS - GOING FIRST" : "TAILS - GOING SECOND", now, 1200);
 
         ui.playLog.clear();
@@ -404,7 +403,7 @@ public class GameController implements AiController.Delegate {
         int idx = rng.nextInt(hand.size());
         Card burned = hand.remove(idx);
         ui.burnFlashCard = CardSnapshot.from(burned).card;
-        ui.burnFlashUntilMs = SystemClock.uptimeMillis() + 1500;
+        ui.burnFlashUntilMs = timeSource.nowUptimeMs() + 1500;
         String owner = forYou ? ui.localPlayerLabel : ui.opponentPlayerLabel;
         ui.burnFlashLabel = (owner == null || owner.trim().isEmpty())
                 ? "BURNING RANDOM CARD"
@@ -491,7 +490,7 @@ public class GameController implements AiController.Delegate {
     private void runOpponentTurnAfterDelay(long delayMs) {
         if (state.matchOver) return;
         turnEngine.resetTurnTimer();
-        long now = SystemClock.uptimeMillis();
+        long now = timeSource.nowUptimeMs();
         turnEngine.setTurnState(TurnEngine.TurnState.AI_THINKING);
         state.driveUsedThisTurnOpp = false;
         showBanner("OPPONENT THINKING...", now, delayMs);
@@ -529,7 +528,7 @@ public class GameController implements AiController.Delegate {
             } else {
                 ui.onlineKickoffWaiting = false;
             }
-            showBanner("WAITING FOR OTHER PLAYER TO KICKOFF", SystemClock.uptimeMillis(), 1400L);
+            showBanner("WAITING FOR OTHER PLAYER TO KICKOFF", timeSource.nowUptimeMs(), 1400L);
             requestLayoutAndInvalidate();
             return;
         }
@@ -586,7 +585,7 @@ public class GameController implements AiController.Delegate {
             ui.inspectOpponent = false;
         }
 
-        long now = SystemClock.uptimeMillis();
+        long now = timeSource.nowUptimeMs();
         RulesEngine.PhaseResolution resolution = rules.resolvePhase(state);
 
         if (resolution.outcome == RulesEngine.PhaseOutcome.YOU_WIN) {
@@ -754,14 +753,14 @@ public class GameController implements AiController.Delegate {
         ui.playFlashLabel = forYou ? ui.localPlayerLabel : ui.opponentPlayerLabel;
         ui.playFlashSourceCard = card;
         ui.playFlashHasTarget = false;
-        ui.playFlashStartMs = SystemClock.uptimeMillis();
+        ui.playFlashStartMs = timeSource.nowUptimeMs();
         ui.playFlashUntilMs = ui.playFlashStartMs + ui.playFlashHoldMs + ui.playFlashAnimMs;
         uiCallbacks.invalidate();
     }
 
     public void triggerFlash(int color, long durationMs) {
         ui.flashColor = color;
-        ui.flashStartMs = SystemClock.uptimeMillis();
+        ui.flashStartMs = timeSource.nowUptimeMs();
         ui.flashDurationMs = durationMs;
         uiCallbacks.postInvalidateOnAnimation();
     }
@@ -793,7 +792,7 @@ public class GameController implements AiController.Delegate {
         boolean homeWon = state.homeScore > state.awayScore;
         String winnerLabel = homeWon ? ui.localPlayerLabel.toUpperCase() : ui.opponentPlayerLabel.toUpperCase();
         String text = winnerLabel + " WINS " + state.homeScore + "-" + state.awayScore;
-        long now = SystemClock.uptimeMillis();
+        long now = timeSource.nowUptimeMs();
         state.bannerText = text;
         state.bannerUntilMs = Long.MAX_VALUE;
         ui.matchWinBannerSticky = true;
@@ -815,11 +814,17 @@ public class GameController implements AiController.Delegate {
         ui.inspectCard = null;
         ui.inspectOpponent = false;
 
-        long now = SystemClock.uptimeMillis();
+        long now = timeSource.nowUptimeMs();
         showBanner("MATCH TIED", now, 2200);
         triggerFlash(0xFFA0A0A0, 700);
         sound.playTone(ToneGenerator.TONE_PROP_BEEP, 200);
         uiCallbacks.invalidate();
+    }
+
+    public boolean isMatchBannerDismissBlocked() {
+        if (!state.matchOver) return false;
+        if (!ui.matchWinBannerSticky) return false;
+        return timeSource.nowUptimeMs() < ui.matchBannerDismissAllowedAtMs;
     }
 
     public boolean clearMatchBannerIfSticky(MotionEvent e) {
@@ -827,7 +832,7 @@ public class GameController implements AiController.Delegate {
         if (!ui.matchWinBannerSticky) return false;
         if (e.getActionMasked() != MotionEvent.ACTION_DOWN) return false;
         if (state.bannerText == null || state.bannerText.isEmpty()) return false;
-        if (SystemClock.uptimeMillis() < ui.matchBannerDismissAllowedAtMs) return true;
+        if (isMatchBannerDismissBlocked()) return true;
         state.hideBanner();
         ui.matchWinBannerSticky = false;
         uiCallbacks.invalidate();
@@ -1026,7 +1031,7 @@ public class GameController implements AiController.Delegate {
 
     @Override
     public long getPlayFlashDelayMs() {
-        long now = SystemClock.uptimeMillis();
+        long now = timeSource.nowUptimeMs();
         return Math.max(0L, ui.playFlashUntilMs - now);
     }
 
