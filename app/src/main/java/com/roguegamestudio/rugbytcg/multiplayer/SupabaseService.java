@@ -2,6 +2,8 @@ package com.roguegamestudio.rugbytcg.multiplayer;
 
 import android.net.Uri;
 
+import com.roguegamestudio.rugbytcg.BuildConfig;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -25,6 +27,7 @@ import java.util.TimeZone;
 public class SupabaseService {
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 10_000;
+    public static final int MULTIPLAYER_PROTOCOL_VERSION = BuildConfig.VERSION_CODE;
 
     private final String baseUrl;
     private final String publishableKey;
@@ -223,12 +226,157 @@ public class SupabaseService {
         );
     }
 
+    public JoinMatchResult joinMatchV2(String accessToken, String matchId)
+            throws IOException, JSONException {
+        if (isBlank(accessToken)) throw new IllegalArgumentException("accessToken is empty");
+        if (isBlank(matchId)) throw new IllegalArgumentException("matchId is empty");
+
+        JSONObject body = new JSONObject();
+        body.put("p_match_id", matchId);
+        body.put("p_client_version", MULTIPLAYER_PROTOCOL_VERSION);
+
+        JSONArray rows = postJsonArray(baseUrl + "/rest/v1/rpc/join_match_v2", body, accessToken);
+        if (rows.length() <= 0) {
+            throw new IOException("join_match_v2 returned no rows");
+        }
+        JSONObject row = rows.getJSONObject(0);
+        return new JoinMatchResult(
+                row.optBoolean("accepted", false),
+                row.optString("reason", ""),
+                row.optString("match_id", matchId),
+                row.optString("status", ""),
+                row.optString("player_a", ""),
+                row.optString("player_b", ""),
+                row.optString("your_user_id", ""),
+                row.optInt("protocol_version", 0),
+                row.optInt("last_seq", -1),
+                row.optString("turn_owner", ""),
+                row.optLong("turn_remaining_ms", -1L),
+                row.optLong("match_elapsed_ms", -1L),
+                row.optBoolean("awaiting_rekickoff", false),
+                row.optInt("kickoff_generation", 0),
+                parseJsonPayload(row, "canonical_state"),
+                row.optBoolean("local_kickoff_ready", false),
+                row.optBoolean("remote_kickoff_ready", false)
+        );
+    }
+
+    public SubmitActionV2Result submitMatchActionV2(String accessToken,
+                                                    String matchId,
+                                                    String actionType,
+                                                    JSONObject payload,
+                                                    Integer expectedSeq)
+            throws IOException, JSONException {
+        if (isBlank(accessToken)) throw new IllegalArgumentException("accessToken is empty");
+        if (isBlank(matchId)) throw new IllegalArgumentException("matchId is empty");
+        if (isBlank(actionType)) throw new IllegalArgumentException("actionType is empty");
+
+        JSONObject body = new JSONObject();
+        body.put("p_match_id", matchId);
+        body.put("p_action_type", actionType);
+        body.put("p_payload", payload != null ? payload : new JSONObject());
+        if (expectedSeq == null) {
+            body.put("p_expected_seq", JSONObject.NULL);
+        } else {
+            body.put("p_expected_seq", expectedSeq);
+        }
+        body.put("p_client_version", MULTIPLAYER_PROTOCOL_VERSION);
+
+        JSONArray rows = postJsonArray(baseUrl + "/rest/v1/rpc/submit_match_action_v2", body, accessToken);
+        if (rows.length() <= 0) {
+            throw new IOException("submit_match_action_v2 returned no rows");
+        }
+        JSONObject row = rows.getJSONObject(0);
+        return new SubmitActionV2Result(
+                row.optBoolean("accepted", false),
+                row.optInt("seq", -1),
+                row.optString("reason", ""),
+                row.optInt("last_seq", -1),
+                row.optString("turn_owner", ""),
+                row.optLong("turn_remaining_ms", -1L),
+                row.optLong("match_elapsed_ms", -1L),
+                row.optBoolean("awaiting_rekickoff", false),
+                row.optInt("kickoff_generation", 0),
+                parseJsonPayload(row, "canonical_state")
+        );
+    }
+
+    public MatchActionPage fetchMatchActionsSinceV2(String accessToken,
+                                                    String matchId,
+                                                    int afterSeq,
+                                                    int pageSize)
+            throws IOException, JSONException {
+        if (isBlank(accessToken) || isBlank(matchId)) return new MatchActionPage(new ArrayList<>(), false);
+
+        JSONObject body = new JSONObject();
+        body.put("p_match_id", matchId);
+        body.put("p_after_seq", Math.max(-1, afterSeq));
+        body.put("p_page_size", Math.max(1, Math.min(pageSize, 500)));
+        body.put("p_client_version", MULTIPLAYER_PROTOCOL_VERSION);
+
+        JSONArray rows = postJsonArray(baseUrl + "/rest/v1/rpc/fetch_actions_since_v2", body, accessToken);
+        List<MatchAction> actions = parseMatchActions(rows);
+        boolean hasMore = false;
+        if (rows != null && rows.length() > 0) {
+            JSONObject last = rows.optJSONObject(rows.length() - 1);
+            if (last != null) {
+                hasMore = last.optBoolean("has_more", false);
+            }
+        }
+        return new MatchActionPage(actions, hasMore);
+    }
+
+    public PresenceHeartbeatResult heartbeatPresenceV2(String accessToken,
+                                                       String matchId,
+                                                       boolean appActive)
+            throws IOException, JSONException {
+        if (isBlank(accessToken)) throw new IllegalArgumentException("accessToken is empty");
+
+        JSONObject body = new JSONObject();
+        if (isBlank(matchId)) {
+            body.put("p_match_id", JSONObject.NULL);
+        } else {
+            body.put("p_match_id", matchId);
+        }
+        body.put("p_app_active", appActive);
+        body.put("p_client_version", MULTIPLAYER_PROTOCOL_VERSION);
+        JSONArray rows = postJsonArray(baseUrl + "/rest/v1/rpc/heartbeat_presence_v2", body, accessToken);
+        if (rows.length() <= 0) {
+            throw new IOException("heartbeat_presence_v2 returned no rows");
+        }
+        JSONObject row = rows.getJSONObject(0);
+        return new PresenceHeartbeatResult(
+                row.optBoolean("accepted", false),
+                row.optString("reason", ""),
+                row.optInt("online_count", -1),
+                row.optBoolean("awaiting_rekickoff", false),
+                row.optInt("kickoff_generation", 0)
+        );
+    }
+
+    public OnlineCountResult fetchOnlineCountV2(String accessToken)
+            throws IOException, JSONException {
+        if (isBlank(accessToken)) throw new IllegalArgumentException("accessToken is empty");
+        JSONObject body = new JSONObject();
+        body.put("p_client_version", MULTIPLAYER_PROTOCOL_VERSION);
+        JSONArray rows = postJsonArray(baseUrl + "/rest/v1/rpc/get_online_count_v2", body, accessToken);
+        if (rows.length() <= 0) {
+            throw new IOException("get_online_count_v2 returned no rows");
+        }
+        JSONObject row = rows.getJSONObject(0);
+        return new OnlineCountResult(
+                row.optBoolean("accepted", false),
+                row.optString("reason", ""),
+                row.optInt("online_count", -1)
+        );
+    }
+
     public int countDistinctReadyPlayers(String accessToken, String matchId) throws IOException, JSONException {
         if (isBlank(accessToken) || isBlank(matchId)) return 0;
 
         Uri uri = Uri.parse(baseUrl + "/rest/v1/match_actions").buildUpon()
                 .appendQueryParameter("match_id", "eq." + matchId)
-                .appendQueryParameter("action_type", "eq.player_ready")
+                .appendQueryParameter("action_type", "eq.match_ready")
                 .appendQueryParameter("select", "actor_user_id")
                 .appendQueryParameter("order", "seq.asc")
                 .build();
@@ -247,7 +395,7 @@ public class SupabaseService {
         if (isBlank(accessToken) || isBlank(matchId)) return new ArrayList<>();
         Uri uri = Uri.parse(baseUrl + "/rest/v1/match_actions").buildUpon()
                 .appendQueryParameter("match_id", "eq." + matchId)
-                .appendQueryParameter("action_type", "eq.player_ready")
+                .appendQueryParameter("action_type", "eq.match_ready")
                 .appendQueryParameter("select", "seq,actor_user_id,action_type,payload,created_at")
                 .appendQueryParameter("order", "seq.asc")
                 .build();
@@ -432,6 +580,19 @@ public class SupabaseService {
         return v == null || v.trim().isEmpty();
     }
 
+    private JSONObject parseJsonPayload(JSONObject row, String key) {
+        if (row == null || isBlank(key)) return new JSONObject();
+        JSONObject payload = row.optJSONObject(key);
+        if (payload != null) return payload;
+        String text = row.optString(key, "");
+        if (isBlank(text)) return new JSONObject();
+        try {
+            return new JSONObject(text);
+        } catch (Exception ignored) {
+            return new JSONObject();
+        }
+    }
+
     private List<MatchAction> parseMatchActions(JSONArray rows) {
         List<MatchAction> out = new ArrayList<>();
         if (rows == null) return out;
@@ -599,6 +760,139 @@ public class SupabaseService {
             this.accepted = accepted;
             this.seq = seq;
             this.reason = reason;
+        }
+    }
+
+    public static class SubmitActionV2Result {
+        public final boolean accepted;
+        public final int seq;
+        public final String reason;
+        public final int lastSeq;
+        public final String turnOwner;
+        public final long turnRemainingMs;
+        public final long matchElapsedMs;
+        public final boolean awaitingRekickoff;
+        public final int kickoffGeneration;
+        public final JSONObject canonicalState;
+
+        public SubmitActionV2Result(boolean accepted,
+                                    int seq,
+                                    String reason,
+                                    int lastSeq,
+                                    String turnOwner,
+                                    long turnRemainingMs,
+                                    long matchElapsedMs,
+                                    boolean awaitingRekickoff,
+                                    int kickoffGeneration,
+                                    JSONObject canonicalState) {
+            this.accepted = accepted;
+            this.seq = seq;
+            this.reason = reason;
+            this.lastSeq = lastSeq;
+            this.turnOwner = turnOwner;
+            this.turnRemainingMs = turnRemainingMs;
+            this.matchElapsedMs = matchElapsedMs;
+            this.awaitingRekickoff = awaitingRekickoff;
+            this.kickoffGeneration = kickoffGeneration;
+            this.canonicalState = canonicalState != null ? canonicalState : new JSONObject();
+        }
+    }
+
+    public static class JoinMatchResult {
+        public final boolean accepted;
+        public final String reason;
+        public final String matchId;
+        public final String status;
+        public final String playerA;
+        public final String playerB;
+        public final String yourUserId;
+        public final int protocolVersion;
+        public final int lastSeq;
+        public final String turnOwner;
+        public final long turnRemainingMs;
+        public final long matchElapsedMs;
+        public final boolean awaitingRekickoff;
+        public final int kickoffGeneration;
+        public final JSONObject canonicalState;
+        public final boolean localKickoffReady;
+        public final boolean remoteKickoffReady;
+
+        public JoinMatchResult(boolean accepted,
+                               String reason,
+                               String matchId,
+                               String status,
+                               String playerA,
+                               String playerB,
+                               String yourUserId,
+                               int protocolVersion,
+                               int lastSeq,
+                               String turnOwner,
+                               long turnRemainingMs,
+                               long matchElapsedMs,
+                               boolean awaitingRekickoff,
+                               int kickoffGeneration,
+                               JSONObject canonicalState,
+                               boolean localKickoffReady,
+                               boolean remoteKickoffReady) {
+            this.accepted = accepted;
+            this.reason = reason;
+            this.matchId = matchId;
+            this.status = status;
+            this.playerA = playerA;
+            this.playerB = playerB;
+            this.yourUserId = yourUserId;
+            this.protocolVersion = protocolVersion;
+            this.lastSeq = lastSeq;
+            this.turnOwner = turnOwner;
+            this.turnRemainingMs = turnRemainingMs;
+            this.matchElapsedMs = matchElapsedMs;
+            this.awaitingRekickoff = awaitingRekickoff;
+            this.kickoffGeneration = kickoffGeneration;
+            this.canonicalState = canonicalState != null ? canonicalState : new JSONObject();
+            this.localKickoffReady = localKickoffReady;
+            this.remoteKickoffReady = remoteKickoffReady;
+        }
+    }
+
+    public static class MatchActionPage {
+        public final List<MatchAction> actions;
+        public final boolean hasMore;
+
+        public MatchActionPage(List<MatchAction> actions, boolean hasMore) {
+            this.actions = actions != null ? actions : new ArrayList<>();
+            this.hasMore = hasMore;
+        }
+    }
+
+    public static class PresenceHeartbeatResult {
+        public final boolean accepted;
+        public final String reason;
+        public final int onlineCount;
+        public final boolean awaitingRekickoff;
+        public final int kickoffGeneration;
+
+        public PresenceHeartbeatResult(boolean accepted,
+                                       String reason,
+                                       int onlineCount,
+                                       boolean awaitingRekickoff,
+                                       int kickoffGeneration) {
+            this.accepted = accepted;
+            this.reason = reason;
+            this.onlineCount = onlineCount;
+            this.awaitingRekickoff = awaitingRekickoff;
+            this.kickoffGeneration = kickoffGeneration;
+        }
+    }
+
+    public static class OnlineCountResult {
+        public final boolean accepted;
+        public final String reason;
+        public final int onlineCount;
+
+        public OnlineCountResult(boolean accepted, String reason, int onlineCount) {
+            this.accepted = accepted;
+            this.reason = reason;
+            this.onlineCount = onlineCount;
         }
     }
 

@@ -24,7 +24,6 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.roguegamestudio.rugbytcg.multiplayer.GuestAuthManager;
 import com.roguegamestudio.rugbytcg.multiplayer.SupabaseProfile;
-import com.roguegamestudio.rugbytcg.multiplayer.SupabasePresenceClient;
 import com.roguegamestudio.rugbytcg.multiplayer.SupabaseService;
 
 import org.json.JSONObject;
@@ -37,6 +36,7 @@ public class MenuActivity extends AppCompatActivity {
     private static final String KEY_TUTORIAL_DONE = "tutorial_done";
     private static final long CHALLENGE_POLL_MS = 4_000L;
     private static final long READY_POLL_MS = 1_500L;
+    private static final long PRESENCE_POLL_MS = 7_000L;
 
     private final ExecutorService authExecutor = Executors.newSingleThreadExecutor();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
@@ -63,9 +63,6 @@ public class MenuActivity extends AppCompatActivity {
     private AlertDialog waitingForOpponentDialog;
     private String waitingForOpponentMatchId;
     private boolean launchingOnlineMatch = false;
-    private SupabasePresenceClient onlinePresenceClient;
-    private String onlinePresenceUserId = null;
-    private String onlinePresenceToken = null;
     private int currentOnlinePlayerCount = -1;
 
     private final Runnable challengePollTask = new Runnable() {
@@ -79,6 +76,13 @@ public class MenuActivity extends AppCompatActivity {
         @Override
         public void run() {
             pollReadyAndStartIfBothReady();
+        }
+    };
+
+    private final Runnable presencePollTask = new Runnable() {
+        @Override
+        public void run() {
+            pollOnlinePresence();
         }
     };
 
@@ -255,10 +259,12 @@ public class MenuActivity extends AppCompatActivity {
                 if (viewDestroyed || isFinishing()) return;
                 if (finalAuthState != null) {
                     applyAuthState(finalAuthState);
+                    ensureOnlinePresenceTracking();
                 } else {
                     currentAuthState = null;
                     currentProfile = null;
                     currentActiveMatch = null;
+                    stopOnlinePresenceTracking();
                     refreshMultiplayerButtons();
                 }
                 onlineStatusText.setText(finalStatusLine);
@@ -495,10 +501,8 @@ public class MenuActivity extends AppCompatActivity {
         currentProfile = authState.profile;
         if (authState.profile != null) {
             onlineStatusText.setText("ONLINE ID: " + authState.profile.publicId);
-            ensureOnlinePresenceTracking();
         } else {
             onlineStatusText.setText("ONLINE: OFFLINE");
-            stopOnlinePresenceTracking();
         }
         refreshMultiplayerButtons();
         refreshOnlineCountText();
@@ -538,77 +542,60 @@ public class MenuActivity extends AppCompatActivity {
             refreshOnlineCountText();
             return;
         }
-
-        String userId = currentAuthState.session.userId;
-        String accessToken = currentAuthState.session.accessToken;
-        boolean sameSession = onlinePresenceClient != null
-                && userId.equals(onlinePresenceUserId)
-                && accessToken.equals(onlinePresenceToken);
-        if (sameSession) {
-            refreshOnlineCountText();
-            return;
-        }
-
-        stopOnlinePresenceTracking();
-        onlinePresenceUserId = userId;
-        onlinePresenceToken = accessToken;
         currentOnlinePlayerCount = -1;
         refreshOnlineCountText();
-
-        onlinePresenceClient = new SupabasePresenceClient(
-                BuildConfig.SUPABASE_URL,
-                BuildConfig.SUPABASE_PUBLISHABLE_KEY,
-                accessToken,
-                userId,
-                new SupabasePresenceClient.Listener() {
-                    @Override
-                    public void onConnected() {
-                        runOnUiThread(() -> {
-                            if (viewDestroyed || isFinishing()) return;
-                            refreshOnlineCountText();
-                        });
-                    }
-
-                    @Override
-                    public void onDisconnected() {
-                        runOnUiThread(() -> {
-                            if (viewDestroyed || isFinishing()) return;
-                            currentOnlinePlayerCount = -1;
-                            refreshOnlineCountText();
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        runOnUiThread(() -> {
-                            if (viewDestroyed || isFinishing()) return;
-                            currentOnlinePlayerCount = -1;
-                            refreshOnlineCountText();
-                        });
-                    }
-
-                    @Override
-                    public void onOnlineCountChanged(int onlineCount) {
-                        runOnUiThread(() -> {
-                            if (viewDestroyed || isFinishing()) return;
-                            currentOnlinePlayerCount = Math.max(0, onlineCount);
-                            refreshOnlineCountText();
-                        });
-                    }
-                }
-        );
-        onlinePresenceClient.connect();
+        schedulePresencePoll(200L);
     }
 
     private void stopOnlinePresenceTracking() {
-        SupabasePresenceClient client = onlinePresenceClient;
-        onlinePresenceClient = null;
-        if (client != null) {
-            client.disconnect();
-        }
-        onlinePresenceUserId = null;
-        onlinePresenceToken = null;
+        uiHandler.removeCallbacks(presencePollTask);
+        sendPresenceInactive();
         currentOnlinePlayerCount = -1;
+    }
+
+    private void pollOnlinePresence() {
+        if (viewDestroyed || isFinishing()) return;
+        if (currentAuthState == null || currentAuthState.session == null || currentProfile == null) {
+            schedulePresencePoll(PRESENCE_POLL_MS);
+            return;
+        }
+
+        authExecutor.execute(() -> {
+            try {
+                GuestAuthManager.AuthState authState = guestAuthManager.ensureGuestSession();
+                SupabaseService.PresenceHeartbeatResult result = supabaseService.heartbeatPresenceV2(
+                        authState.session.accessToken,
+                        null,
+                        true
+                );
+                final int onlineCount = result.accepted ? Math.max(0, result.onlineCount) : -1;
+                runOnUiThread(() -> {
+                    if (viewDestroyed || isFinishing()) return;
+                    applyAuthState(authState);
+                    currentOnlinePlayerCount = onlineCount;
+                    refreshOnlineCountText();
+                    schedulePresencePoll(PRESENCE_POLL_MS);
+                });
+            } catch (Exception ignored) {
+                runOnUiThread(() -> {
+                    if (viewDestroyed || isFinishing()) return;
+                    currentOnlinePlayerCount = -1;
+                    refreshOnlineCountText();
+                    schedulePresencePoll(PRESENCE_POLL_MS);
+                });
+            }
+        });
+    }
+
+    private void sendPresenceInactive() {
+        GuestAuthManager.AuthState auth = currentAuthState;
+        if (auth == null || auth.session == null || isBlank(auth.session.accessToken)) return;
+        authExecutor.execute(() -> {
+            try {
+                supabaseService.heartbeatPresenceV2(auth.session.accessToken, null, false);
+            } catch (Exception ignored) {
+            }
+        });
     }
 
     private void refreshOnlineCountText() {
@@ -631,6 +618,13 @@ public class MenuActivity extends AppCompatActivity {
         uiHandler.removeCallbacks(challengePollTask);
         if (!viewDestroyed) {
             uiHandler.postDelayed(challengePollTask, delayMs);
+        }
+    }
+
+    private void schedulePresencePoll(long delayMs) {
+        uiHandler.removeCallbacks(presencePollTask);
+        if (!viewDestroyed) {
+            uiHandler.postDelayed(presencePollTask, Math.max(0L, delayMs));
         }
     }
 
@@ -667,12 +661,16 @@ public class MenuActivity extends AppCompatActivity {
         authExecutor.execute(() -> {
             try {
                 GuestAuthManager.AuthState authState = guestAuthManager.ensureGuestSession();
-                supabaseService.submitMatchAction(
+                SupabaseService.SubmitActionV2Result result = supabaseService.submitMatchActionV2(
                         authState.session.accessToken,
                         match.matchId,
-                        "player_ready",
-                        new JSONObject()
+                        "match_ready",
+                        new JSONObject(),
+                        null
                 );
+                if (!result.accepted) {
+                    throw new IllegalStateException(result.reason);
+                }
                 runOnUiThread(() -> {
                     if (viewDestroyed || isFinishing()) return;
                     applyAuthState(authState);
@@ -849,8 +847,15 @@ public class MenuActivity extends AppCompatActivity {
         if (lower.contains("challenge_not_found")) return "Challenge no longer exists.";
         if (lower.contains("not_challenge_target")) return "This challenge is not addressed to you.";
         if (lower.contains("expired")) return "Challenge expired.";
+        if (lower.contains("client_upgrade_required")) return "Multiplayer update required.";
         if (lower.contains("forfeit_my_active_match")) {
             return "Missing RPC forfeit function. Run the SQL patch for forfeit_my_active_match.";
+        }
+        if (lower.contains("submit_match_action_v2")
+                || lower.contains("join_match_v2")
+                || lower.contains("fetch_actions_since_v2")
+                || lower.contains("heartbeat_presence_v2")) {
+            return "Missing multiplayer v2 RPCs. Run SQL patch 20260208_multiplayer_v2_authority.sql.";
         }
         if (lower.contains("http 300") || lower.contains("pgrst203") || lower.contains("multiple choices")) {
             return "Duplicate submit_match_action RPC signatures detected. Re-run the SQL patch "

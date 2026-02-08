@@ -128,9 +128,10 @@ public class HudRenderer {
                                   TutorialController tutorial) {
         boolean kickoffPending = ui != null && ui.onlineInitialKickoffPending;
         boolean kickoffWaiting = ui != null && ui.onlineKickoffWaiting;
+        boolean actionAckPending = ui != null && ui.onlineActionAckPending;
         boolean enabled = kickoffPending
-                ? !kickoffWaiting
-                : (state.matchOver || (turnEngine.getTurnState() == TurnEngine.TurnState.PLAYER));
+                ? !kickoffWaiting && !actionAckPending
+                : (state.matchOver || (turnEngine.getTurnState() == TurnEngine.TurnState.PLAYER && !actionAckPending));
         if (!kickoffPending && tutorial != null && tutorial.isActive() && !tutorial.isEndTurnEnabled()) {
             enabled = false;
         }
@@ -142,7 +143,8 @@ public class HudRenderer {
         ctx.paint.setTextSize(ctx.dp(18));
         String t;
         if (state.matchOver) t = "NEW MATCH";
-        else if (kickoffPending) t = kickoffWaiting ? "WAIT..." : "KICKOFF";
+        else if (kickoffPending) t = (kickoffWaiting || actionAckPending) ? "WAIT..." : "KICKOFF";
+        else if (actionAckPending) t = "SYNC...";
         else t = (turnEngine.getTurnState() == TurnEngine.TurnState.AI_THINKING) ? "WAIT..." : "END TURN";
         float tw = ctx.paint.measureText(t);
         c.drawText(t, layout.endTurnBtn.centerX() - tw / 2f, layout.endTurnBtn.centerY() + ctx.dp(6), ctx.paint);

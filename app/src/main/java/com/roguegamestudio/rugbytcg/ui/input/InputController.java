@@ -180,13 +180,14 @@ public class InputController {
                 }
 
                 if (!state.matchOver && layout.endTurnBtn.contains(x, y)) {
-                    if (ui.onlineInitialKickoffPending || turnEngine.getTurnState() == TurnEngine.TurnState.PLAYER) {
+                    if (!ui.onlineActionAckPending
+                            && (ui.onlineInitialKickoffPending || turnEngine.getTurnState() == TurnEngine.TurnState.PLAYER)) {
                         controller.onEndTurn();
                         return true;
                     }
                 }
 
-                if (ui.onlineInitialKickoffPending) {
+                if (ui.onlineInitialKickoffPending || ui.onlineActionAckPending) {
                     return true;
                 }
 
@@ -208,7 +209,7 @@ public class InputController {
                 if (tutorial != null && tutorial.isActive() && tutorial.isInspectStep()) {
                     return true;
                 }
-                if (ui.onlineInitialKickoffPending) {
+                if (ui.onlineInitialKickoffPending || ui.onlineActionAckPending) {
                     return true;
                 }
                 if (state.matchOver) {
@@ -258,7 +259,7 @@ public class InputController {
             case MotionEvent.ACTION_CANCEL:
                 cancelHandLongPress();
                 cancelBoardLongPress();
-                if (ui.onlineInitialKickoffPending) {
+                if (ui.onlineInitialKickoffPending || ui.onlineActionAckPending) {
                     dragState.pressedCard = null;
                     dragState.dragging = null;
                     dragState.longPressTriggered = false;

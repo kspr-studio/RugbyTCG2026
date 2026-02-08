@@ -121,17 +121,15 @@ public class SupabaseRealtimeClient {
 
         @Override
         public void onFailure(WebSocket webSocket, Throwable t, Response response) {
-            if (listener != null) {
-                String message = null;
-                if (t != null && t.getMessage() != null) {
-                    message = t.getMessage();
-                } else if (response != null) {
-                    message = "HTTP " + response.code();
-                } else {
-                    message = "Realtime socket failure";
-                }
-                listener.onError(message);
+            String message = null;
+            if (t != null && t.getMessage() != null) {
+                message = t.getMessage();
+            } else if (response != null) {
+                message = "HTTP " + response.code();
+            } else {
+                message = "Realtime socket failure";
             }
+            notifyError(message);
             handleDisconnected();
         }
     }
@@ -153,9 +151,7 @@ public class SupabaseRealtimeClient {
             payload.put("config", config);
             payload.put("access_token", accessToken);
         } catch (JSONException e) {
-            if (listener != null) {
-                listener.onError("Realtime join payload error");
-            }
+            notifyError("Realtime join payload error");
             return;
         }
         sendFrame(topic, "phx_join", payload);
@@ -172,21 +168,19 @@ public class SupabaseRealtimeClient {
             }
             if ("phx_error".equals(event)) {
                 JSONObject payload = root.optJSONObject("payload");
-                if (listener != null && payload != null) {
-                    listener.onError(payload.toString());
+                if (payload != null) {
+                    notifyError(payload.toString());
                 }
                 return;
             }
             if ("postgres_changes".equals(event)) {
                 SupabaseService.MatchAction action = parseMatchAction(root.optJSONObject("payload"));
-                if (listener != null && action != null) {
-                    listener.onMatchAction(action);
+                if (action != null) {
+                    notifyMatchAction(action);
                 }
             }
         } catch (Exception e) {
-            if (listener != null) {
-                listener.onError("Realtime parse error");
-            }
+            notifyError("Realtime parse error");
         }
     }
 
@@ -206,10 +200,10 @@ public class SupabaseRealtimeClient {
                 startHeartbeatLocked();
             }
             if (notify && listener != null) {
-                listener.onConnected();
+                notifyConnected();
             }
-        } else if (listener != null) {
-            listener.onError("Realtime join rejected");
+        } else {
+            notifyError("Realtime join rejected");
         }
     }
 
@@ -227,8 +221,8 @@ public class SupabaseRealtimeClient {
                 }
             }
         }
-        if (notify && listener != null) {
-            listener.onDisconnected();
+        if (notify) {
+            notifyDisconnected();
         }
     }
 
@@ -334,6 +328,38 @@ public class SupabaseRealtimeClient {
 
     private boolean isBlank(String v) {
         return v == null || v.trim().isEmpty();
+    }
+
+    private void notifyConnected() {
+        if (listener == null) return;
+        try {
+            listener.onConnected();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void notifyDisconnected() {
+        if (listener == null) return;
+        try {
+            listener.onDisconnected();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void notifyError(String message) {
+        if (listener == null) return;
+        try {
+            listener.onError(message);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void notifyMatchAction(SupabaseService.MatchAction action) {
+        if (listener == null || action == null) return;
+        try {
+            listener.onMatchAction(action);
+        } catch (Throwable ignored) {
+        }
     }
 
     private long parseIso8601ToEpochMs(String raw) {

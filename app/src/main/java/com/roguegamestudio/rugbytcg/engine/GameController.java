@@ -151,6 +151,8 @@ public class GameController implements AiController.Delegate {
         onlineInitialKickoffPending = false;
         ui.onlineInitialKickoffPending = false;
         ui.onlineKickoffWaiting = false;
+        ui.onlineActionAckPending = false;
+        ui.onlineKickoffGeneration = 0;
         ui.matchBannerDismissAllowedAtMs = 0L;
         rng.setSeed(System.nanoTime());
         setPlayerLabels("HOME", "AWAY");
@@ -182,6 +184,7 @@ public class GameController implements AiController.Delegate {
         onlineInitialKickoffPending = false;
         ui.onlineInitialKickoffPending = false;
         ui.onlineKickoffWaiting = false;
+        ui.onlineActionAckPending = false;
         ui.matchBannerDismissAllowedAtMs = 0L;
         ui.matchWinBannerSticky = false;
         state.hideBanner();
@@ -202,6 +205,8 @@ public class GameController implements AiController.Delegate {
         onlineInitialKickoffPending = false;
         ui.onlineInitialKickoffPending = false;
         ui.onlineKickoffWaiting = false;
+        ui.onlineActionAckPending = false;
+        ui.onlineKickoffGeneration = 0;
         ui.matchBannerDismissAllowedAtMs = 0L;
         setPlayerLabels("HOME", "AWAY");
         tutorialMode = true;
@@ -318,6 +323,7 @@ public class GameController implements AiController.Delegate {
             onlineInitialKickoffStarterHome = homeStarts;
             ui.onlineInitialKickoffPending = true;
             ui.onlineKickoffWaiting = false;
+            ui.onlineActionAckPending = false;
             state.matchStartElapsedMs = 0L;
             turnEngine.setTurnState(TurnEngine.TurnState.AI_THINKING);
             requestLayoutAndInvalidate();
@@ -326,6 +332,7 @@ public class GameController implements AiController.Delegate {
         onlineInitialKickoffPending = false;
         ui.onlineInitialKickoffPending = false;
         ui.onlineKickoffWaiting = false;
+        ui.onlineActionAckPending = false;
         startPhaseWithStarter(homeStarts, firstTurnEpochMs);
     }
 
@@ -411,6 +418,7 @@ public class GameController implements AiController.Delegate {
 
     private void startPlayerTurn(long turnStartEpochMs) {
         if (state.matchOver) return;
+        ui.onlineActionAckPending = false;
         if (tutorialMode) {
             turnEngine.resetTurnTimer();
             turnEngine.setTurnState(TurnEngine.TurnState.PLAYER);
@@ -437,6 +445,7 @@ public class GameController implements AiController.Delegate {
 
     private void startOpponentTurnOnline(long turnStartEpochMs) {
         if (state.matchOver) return;
+        ui.onlineActionAckPending = false;
         if (onlineGameplayMode && turnStartEpochMs > 0L) {
             turnEngine.resetTurnTimerAtElapsed(epochToElapsed(turnStartEpochMs));
         } else {
@@ -456,10 +465,27 @@ public class GameController implements AiController.Delegate {
 
     public void confirmLocalEndTurnAtServerTime(long createdAtEpochMs) {
         if (!onlineGameplayMode) return;
-        if (createdAtEpochMs <= 0L) return;
-        if (turnEngine.getTurnState() != TurnEngine.TurnState.AI_THINKING) return;
-        turnEngine.resetTurnTimerAtElapsed(epochToElapsed(createdAtEpochMs));
-        uiCallbacks.invalidate();
+        ui.onlineActionAckPending = false;
+        if (state.matchOver) {
+            requestLayoutAndInvalidate();
+            return;
+        }
+        if (turnEngine.getTurnState() == TurnEngine.TurnState.PLAYER) {
+            if (kickoffResponseResolveOnPlayerEnd) {
+                kickoffResponseResolveOnPlayerEnd = false;
+                boolean roundEnded = resolvePhase(createdAtEpochMs);
+                if (!roundEnded) {
+                    startNextPhase(createdAtEpochMs);
+                }
+            } else {
+                startOpponentTurnOnline(createdAtEpochMs);
+            }
+            return;
+        }
+        if (createdAtEpochMs > 0L) {
+            turnEngine.resetTurnTimerAtElapsed(epochToElapsed(createdAtEpochMs));
+        }
+        requestLayoutAndInvalidate();
     }
 
     private void runOpponentTurnAfterDelay(long delayMs) {
@@ -498,7 +524,10 @@ public class GameController implements AiController.Delegate {
             if (ui.onlineKickoffWaiting) return;
             ui.onlineKickoffWaiting = true;
             if (onlineActionListener != null) {
+                ui.onlineActionAckPending = true;
                 onlineActionListener.onLocalKickoff();
+            } else {
+                ui.onlineKickoffWaiting = false;
             }
             showBanner("WAITING FOR OTHER PLAYER TO KICKOFF", SystemClock.uptimeMillis(), 1400L);
             requestLayoutAndInvalidate();
@@ -512,8 +541,13 @@ public class GameController implements AiController.Delegate {
             return;
         }
 
-        if (onlineGameplayMode && onlineActionListener != null) {
-            onlineActionListener.onLocalEndTurn();
+        if (onlineGameplayMode) {
+            if (onlineActionListener != null) {
+                ui.onlineActionAckPending = true;
+                onlineActionListener.onLocalEndTurn();
+                requestLayoutAndInvalidate();
+            }
+            return;
         }
 
         if (kickoffResponseResolveOnPlayerEnd) {
@@ -522,11 +556,6 @@ public class GameController implements AiController.Delegate {
             if (!roundEnded) {
                 startNextPhase(-1L);
             }
-            return;
-        }
-
-        if (onlineGameplayMode) {
-            startOpponentTurnOnline(-1L);
             return;
         }
 
@@ -823,6 +852,7 @@ public class GameController implements AiController.Delegate {
                                              boolean kickoffResponsePendingState) {
         if (!onlineGameplayMode) return;
         if (state.matchOver) return;
+        ui.onlineActionAckPending = false;
 
         state.homeScore = localIsPlayerA ? scoreA : scoreB;
         state.awayScore = localIsPlayerA ? scoreB : scoreA;
@@ -868,15 +898,30 @@ public class GameController implements AiController.Delegate {
         return onlineGameplayMode && onlineInitialKickoffPending;
     }
 
+    public void setOnlineKickoffGeneration(int generation) {
+        ui.onlineKickoffGeneration = Math.max(0, generation);
+    }
+
+    public int getOnlineKickoffGeneration() {
+        return Math.max(0, ui.onlineKickoffGeneration);
+    }
+
+    public void clearOnlineActionAckPending() {
+        ui.onlineActionAckPending = false;
+        requestLayoutAndInvalidate();
+    }
+
     public void markOnlineInitialKickoffSubmitted() {
         if (!onlineGameplayMode || !onlineInitialKickoffPending) return;
         ui.onlineKickoffWaiting = true;
+        ui.onlineActionAckPending = false;
         requestLayoutAndInvalidate();
     }
 
     public void clearOnlineInitialKickoffWaiting() {
         if (!onlineGameplayMode || !onlineInitialKickoffPending) return;
         ui.onlineKickoffWaiting = false;
+        ui.onlineActionAckPending = false;
         requestLayoutAndInvalidate();
     }
 
@@ -885,6 +930,7 @@ public class GameController implements AiController.Delegate {
         onlineInitialKickoffPending = false;
         ui.onlineInitialKickoffPending = false;
         ui.onlineKickoffWaiting = false;
+        ui.onlineActionAckPending = false;
 
         long elapsedSinceKickoff = 0L;
         if (kickoffEpochMs > 0L) {

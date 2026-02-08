@@ -7,6 +7,7 @@ import android.graphics.Paint;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -44,15 +45,21 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class GameView extends View {
+    private static final String TAG = "GameView";
     private static final long UI_HEARTBEAT_MS = 1000L;
     private static final long ONLINE_MATCH_POLL_MS = 1800L;
     private static final long ONLINE_ACTION_FALLBACK_POLL_MS = 800L;
+    private static final long ONLINE_ACTION_SAFETY_POLL_MS = 2500L;
+    private static final int ONLINE_ACTION_PAGE_SIZE = 200;
+    private static final int ONLINE_ACTION_MAX_PAGES_PER_POLL = 8;
     private static final long ONLINE_REALTIME_RECONNECT_MIN_MS = 300L;
     private static final long ONLINE_REALTIME_RECONNECT_MAX_MS = 2500L;
     private static final long ONLINE_RESYNC_REQUEST_MIN_GAP_MS = 1200L;
+    private static final long ONLINE_PRESENCE_HEARTBEAT_MS = 7000L;
 
     public interface TutorialListener {
         void onTutorialFinished();
@@ -113,6 +120,7 @@ public class GameView extends View {
     private boolean onlineKickoffLocalReady = false;
     private boolean onlineKickoffRemoteReady = false;
     private boolean onlineKickoffStarted = false;
+    private int onlineKickoffGeneration = 0;
     private boolean onlineReturnToMenuScheduled = false;
     private volatile boolean onlineActionPollInFlight = false;
     private volatile boolean onlineStatusPollInFlight = false;
@@ -157,10 +165,22 @@ public class GameView extends View {
         public void run() {
             if (!isAttachedToWindow()) return;
             if (onlineMode && !onlineForfeitHandled && !onlineMatchEndedHandled) {
-                if (gameStarted && onlineGameplayReady && !onlineRealtimeConnected) {
+                if (gameStarted && onlineGameplayReady) {
                     pollOnlineMatchActions();
                 }
-                postDelayed(this, ONLINE_ACTION_FALLBACK_POLL_MS);
+                long next = onlineRealtimeConnected ? ONLINE_ACTION_SAFETY_POLL_MS : ONLINE_ACTION_FALLBACK_POLL_MS;
+                postDelayed(this, next);
+            }
+        }
+    };
+
+    private final Runnable onlinePresenceHeartbeat = new Runnable() {
+        @Override
+        public void run() {
+            if (!isAttachedToWindow()) return;
+            if (onlineMode && onlineGameplayReady && !onlineForfeitHandled && !onlineMatchEndedHandled) {
+                submitOnlinePresenceHeartbeat(true);
+                postDelayed(this, ONLINE_PRESENCE_HEARTBEAT_MS);
             }
         }
     };
@@ -324,9 +344,13 @@ public class GameView extends View {
         removeCallbacks(onlineMatchPoll);
         removeCallbacks(onlineActionPoll);
         removeCallbacks(onlineRealtimeReconnect);
+        removeCallbacks(onlinePresenceHeartbeat);
         if (onlineMode && !onlineForfeitHandled && !onlineMatchEndedHandled) {
             postDelayed(onlineMatchPoll, 800L);
             postDelayed(onlineActionPoll, 900L);
+            if (gameStarted && onlineGameplayReady) {
+                postDelayed(onlinePresenceHeartbeat, 600L);
+            }
             if (gameStarted && onlineGameplayReady && !onlineRealtimeConnected) {
                 connectOnlineRealtime(false);
             }
@@ -348,6 +372,8 @@ public class GameView extends View {
         removeCallbacks(onlineMatchPoll);
         removeCallbacks(onlineActionPoll);
         removeCallbacks(onlineRealtimeReconnect);
+        removeCallbacks(onlinePresenceHeartbeat);
+        submitOnlinePresenceHeartbeat(false);
         if (!gameStarted && assetsLoading) {
             assetLoadGeneration.incrementAndGet();
             assetsLoading = false;
@@ -368,6 +394,21 @@ public class GameView extends View {
         } else {
             invalidate();
         }
+    }
+
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        if (!onlineMode) return;
+        if (visibility == View.VISIBLE) {
+            if (gameStarted && onlineGameplayReady && !onlineForfeitHandled && !onlineMatchEndedHandled) {
+                removeCallbacks(onlinePresenceHeartbeat);
+                postDelayed(onlinePresenceHeartbeat, 400L);
+            }
+            return;
+        }
+        removeCallbacks(onlinePresenceHeartbeat);
+        submitOnlinePresenceHeartbeat(false);
     }
 
     @Override
@@ -498,54 +539,62 @@ public class GameView extends View {
         onlineKickoffLocalReady = false;
         onlineKickoffRemoteReady = false;
         onlineKickoffStarted = false;
+        onlineKickoffGeneration = 0;
         onlineReturnToMenuScheduled = false;
         shutdownOnlineRealtimeClient();
 
-        onlineExecutor.execute(() -> {
+        boolean submitted = executeOnlineSafely(() -> {
             try {
                 GuestAuthManager.AuthState auth = ensureOnlineAuth(true);
                 onlineLocalUserId = auth.session.userId;
 
-                SupabaseService.MatchSnapshot snapshot = supabaseService.fetchMatchSnapshot(
+                SupabaseService.JoinMatchResult join = supabaseService.joinMatchV2(
                         auth.session.accessToken,
                         onlineMatchId
                 );
-                if (snapshot == null) {
-                    throw new IllegalStateException("match_not_found");
+                if (join == null || !join.accepted) {
+                    String reason = join == null ? "join_failed" : normalize(join.reason);
+                    throw new IllegalStateException(reason == null ? "join_failed" : reason);
                 }
 
-                List<SupabaseService.MatchAction> readyActions = supabaseService.fetchReadyActions(
-                        auth.session.accessToken,
-                        onlineMatchId
-                );
-                KickoffState kickoffState = deriveKickoffState(readyActions, onlineLocalUserId);
-                onlineKickoffLocalReady = kickoffState.localReady;
-                onlineKickoffRemoteReady = kickoffState.remoteReady;
-                onlineKickoffStarted = kickoffState.bothReady;
-
-                long matchStartEpochMs = deriveMatchStartEpochMs(readyActions);
-                int maxReadySeq = maxSeq(readyActions);
-                if (kickoffState.bothReady && kickoffState.startEpochMs > 0L) {
-                    matchStartEpochMs = kickoffState.startEpochMs;
-                }
-                if (matchStartEpochMs <= 0L) {
-                    matchStartEpochMs = System.currentTimeMillis();
-                }
-
-                final long startEpochFinal = matchStartEpochMs;
-                final int lastSeqFinal = maxReadySeq;
-                final boolean localIsPlayerA = onlineLocalUserId != null
-                        && onlineLocalUserId.equals(snapshot.playerA);
-                final boolean playerAStarts = choosePlayerAStarts(onlineMatchId);
-                final boolean localStarts = localIsPlayerA ? playerAStarts : !playerAStarts;
+                String localUserId = normalize(join.yourUserId) != null ? join.yourUserId : onlineLocalUserId;
+                onlineLocalUserId = localUserId;
+                onlineAuthoritativeUserId = normalize(join.playerA);
+                final boolean localIsPlayerA = localUserId != null
+                        && onlineAuthoritativeUserId != null
+                        && localUserId.equals(onlineAuthoritativeUserId);
                 onlineLocalIsPlayerA = localIsPlayerA;
-                onlineAuthoritativeUserId = snapshot.playerA;
+
+                onlineKickoffGeneration = Math.max(0, join.kickoffGeneration);
+                onlineKickoffLocalReady = join.localKickoffReady;
+                onlineKickoffRemoteReady = join.remoteKickoffReady;
+                onlineKickoffStarted = !join.awaitingRekickoff;
+
+                final String turnOwner = normalize(join.turnOwner);
+                final boolean localStarts = "player_a".equalsIgnoreCase(turnOwner)
+                        ? localIsPlayerA
+                        : !localIsPlayerA;
+                final long startEpochFinal = join.matchElapsedMs >= 0L
+                        ? (System.currentTimeMillis() - join.matchElapsedMs)
+                        : System.currentTimeMillis();
+                final boolean awaitingRekickoff = join.awaitingRekickoff;
+                final int lastSeqFinal = Math.max(-1, join.lastSeq);
+                final boolean initialKickoffLocalReady = join.localKickoffReady;
+                final JSONObject canonicalState = join.canonicalState;
+                final long turnRemainingFromJoin = Math.max(0L, join.turnRemainingMs);
+                final long matchElapsedFromJoin = Math.max(0L, join.matchElapsedMs);
+                Log.i(
+                        TAG,
+                        "join_match_v2 accepted lastSeq=" + lastSeqFinal
+                                + " turnOwner=" + turnOwner
+                                + " awaitingRekickoff=" + awaitingRekickoff
+                                + " kickoffGen=" + onlineKickoffGeneration
+                );
+
                 String localLabel = resolveLocalOnlineLabel(auth);
                 String opponentLabelFinal = normalize(onlineOpponentLabel) != null
                         ? onlineOpponentLabel
                         : "Opponent";
-                final boolean initialKickoffStarted = onlineKickoffStarted;
-                final boolean initialKickoffLocalReady = onlineKickoffLocalReady;
 
                 post(() -> {
                     if (!isAttachedToWindow()) {
@@ -554,20 +603,40 @@ public class GameView extends View {
                     }
                     controller.setPlayerLabels(localLabel, opponentLabelFinal);
                     controller.configureOnlineMatch(onlineMatchId, localIsPlayerA);
-                    controller.startOnlineMatch(localStarts, startEpochFinal, !initialKickoffStarted);
-                    if (!initialKickoffStarted && initialKickoffLocalReady) {
+                    controller.setOnlineKickoffGeneration(onlineKickoffGeneration);
+                    controller.startOnlineMatch(localStarts, startEpochFinal, awaitingRekickoff);
+                    if (awaitingRekickoff && initialKickoffLocalReady) {
                         controller.markOnlineInitialKickoffSubmitted();
+                    }
+                    if (canonicalState != null && canonicalState.length() > 0) {
+                        applyAuthoritativePhaseState(canonicalState);
+                    } else if (!awaitingRekickoff) {
+                        controller.applyAuthoritativePhaseState(
+                                localIsPlayerA,
+                                state.homeScore,
+                                state.awayScore,
+                                localIsPlayerA ? state.ballPos : -state.ballPos,
+                                localIsPlayerA ? state.yourMomentum : state.oppMomentum,
+                                localIsPlayerA ? state.oppMomentum : state.yourMomentum,
+                                "player_a".equalsIgnoreCase(turnOwner) ? localIsPlayerA : !localIsPlayerA,
+                                turnRemainingFromJoin,
+                                matchElapsedFromJoin,
+                                controller.isKickoffPending(),
+                                controller.isKickoffResponseResolveOnPlayerEnd()
+                        );
                     }
                     controller.showBanner("ONLINE MATCH VS " + opponentLabelFinal.toUpperCase(), SystemClock.uptimeMillis(), 1500);
                     onlineLastActionSeq = lastSeqFinal;
                     onlineGameplayReady = true;
                     onlineInitInProgress = false;
                     gameStarted = true;
+                    postDelayed(onlinePresenceHeartbeat, 500L);
                     connectOnlineRealtime(false);
                     invalidate();
                 });
             } catch (Exception e) {
-                final String message = "Unable to sync online match.";
+                final String message = mapOnlineSyncError(e);
+                Log.w(TAG, "bootstrapOnlineGameplay failed: " + message, e);
                 post(() -> {
                     onlineInitInProgress = false;
                     onlineInitFailed = true;
@@ -579,6 +648,12 @@ public class GameView extends View {
                 });
             }
         });
+        if (!submitted) {
+            onlineInitInProgress = false;
+            onlineInitFailed = true;
+            onlineInitError = "Online worker unavailable";
+            invalidate();
+        }
     }
 
     private int maxSeq(List<SupabaseService.MatchAction> actions) {
@@ -766,35 +841,131 @@ public class GameView extends View {
                 || lower.contains("not_authenticated");
     }
 
+    private String mapOnlineSyncError(Exception e) {
+        if (e == null || e.getMessage() == null) return "Unable to sync online match.";
+        String lower = e.getMessage().toLowerCase();
+        if (lower.contains("client_upgrade_required")) {
+            return "Multiplayer update required.";
+        }
+        if (lower.contains("match_not_found")) {
+            return "Match no longer exists.";
+        }
+        if (lower.contains("not_match_participant")) {
+            return "You are not in this match.";
+        }
+        return "Unable to sync online match.";
+    }
+
+    private String mapActionRejectionBanner(String fallbackText, String reason) {
+        String fallback = normalize(fallbackText) != null ? fallbackText : "NOT SYNCED";
+        String lower = reason == null ? "" : reason.toLowerCase();
+        if (lower.contains("client_upgrade_required")) return "UPDATE REQUIRED";
+        if (lower.contains("seq_conflict")) return "RESYNCING...";
+        if (lower.contains("not_your_turn")) return "NOT YOUR TURN";
+        if (lower.contains("kickoff_required")) return "KICKOFF REQUIRED";
+        if (lower.contains("not_awaiting_kickoff")) return "KICKOFF CLOSED";
+        if (lower.contains("stale_kickoff_generation")) return "REJOIN KICKOFF";
+        if (lower.contains("match_not_active")) return "MATCH ENDED";
+        return fallback;
+    }
+
+    private void handleActionSubmitRejected(String fallbackText, String reason, boolean clearAckAndKickoff) {
+        String normalized = normalize(reason);
+        Log.w(TAG, "online action rejected fallback=" + fallbackText + " reason=" + normalized + " lastSeq=" + onlineLastActionSeq);
+        if (normalized != null && normalized.toLowerCase().contains("seq_conflict")) {
+            post(this::pollOnlineMatchActions);
+        }
+        final boolean upgradeRequired = normalized != null && normalized.toLowerCase().contains("client_upgrade_required");
+        post(() -> {
+            if (clearAckAndKickoff) {
+                controller.clearOnlineActionAckPending();
+                controller.clearOnlineInitialKickoffWaiting();
+            }
+            controller.showBanner(
+                    mapActionRejectionBanner(fallbackText, reason),
+                    SystemClock.uptimeMillis(),
+                    1000L
+            );
+            if (upgradeRequired) {
+                scheduleOnlineReturnToMenu(1200L);
+            }
+        });
+    }
+
+    private boolean executeOnlineSafely(Runnable task) {
+        if (task == null) return false;
+        ExecutorService executor = onlineExecutor;
+        if (executor == null || executor.isShutdown()) return false;
+        try {
+            executor.execute(task);
+            return true;
+        } catch (RejectedExecutionException ignored) {
+            return false;
+        }
+    }
+
+    private void submitOnlinePresenceHeartbeat(boolean appActive) {
+        if (!onlineMode || guestAuthManager == null || supabaseService == null || onlineExecutor == null) {
+            return;
+        }
+        if (onlineExecutor.isShutdown()) return;
+        executeOnlineSafely(() -> {
+            try {
+                GuestAuthManager.AuthState auth = ensureOnlineAuth(false);
+                SupabaseService.PresenceHeartbeatResult result = supabaseService.heartbeatPresenceV2(
+                        auth.session.accessToken,
+                        onlineMatchId,
+                        appActive
+                );
+                if (!result.accepted && isAuthError(new Exception(result.reason))) {
+                    auth = ensureOnlineAuth(true);
+                    result = supabaseService.heartbeatPresenceV2(
+                            auth.session.accessToken,
+                            onlineMatchId,
+                            appActive
+                    );
+                }
+                if (result.accepted && result.kickoffGeneration > 0) {
+                    onlineKickoffGeneration = Math.max(onlineKickoffGeneration, result.kickoffGeneration);
+                    post(() -> controller.setOnlineKickoffGeneration(onlineKickoffGeneration));
+                }
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
     private void submitOnlinePlayCard(CardId cardId) {
         if (!onlineMode || cardId == null || guestAuthManager == null || supabaseService == null || onlineExecutor == null) {
             return;
         }
         if (onlineExecutor.isShutdown()) return;
-        onlineExecutor.execute(() -> {
+        executeOnlineSafely(() -> {
             try {
                 GuestAuthManager.AuthState auth = ensureOnlineAuth(false);
-                SupabaseService.SubmitActionResult result = submitPlayCardOnce(auth, cardId);
+                SupabaseService.SubmitActionV2Result result = submitPlayCardOnce(auth, cardId);
                 if (!result.accepted && isAuthError(new Exception(result.reason))) {
                     auth = ensureOnlineAuth(true);
                     result = submitPlayCardOnce(auth, cardId);
                 }
                 if (!result.accepted) {
-                    post(() -> controller.showBanner("PLAY NOT SYNCED", SystemClock.uptimeMillis(), 900));
+                    handleActionSubmitRejected("PLAY NOT SYNCED", result.reason, false);
+                } else if (result.kickoffGeneration > 0) {
+                    onlineKickoffGeneration = Math.max(onlineKickoffGeneration, result.kickoffGeneration);
+                    post(() -> controller.setOnlineKickoffGeneration(onlineKickoffGeneration));
                 }
             } catch (Exception e) {
                 if (isAuthError(e)) {
                     try {
                         GuestAuthManager.AuthState refreshed = ensureOnlineAuth(true);
-                        SupabaseService.SubmitActionResult retried = submitPlayCardOnce(refreshed, cardId);
+                        SupabaseService.SubmitActionV2Result retried = submitPlayCardOnce(refreshed, cardId);
                         if (!retried.accepted) {
-                            post(() -> controller.showBanner("PLAY NOT SYNCED", SystemClock.uptimeMillis(), 900));
+                            handleActionSubmitRejected("PLAY NOT SYNCED", retried.reason, false);
                         }
                         return;
                     } catch (Exception ignored) {
                     }
                 }
-                post(() -> controller.showBanner("PLAY NOT SYNCED", SystemClock.uptimeMillis(), 900));
+                handleActionSubmitRejected("PLAY NOT SYNCED", e.getMessage(), false);
             }
         });
     }
@@ -804,30 +975,33 @@ public class GameView extends View {
             return;
         }
         if (onlineExecutor.isShutdown()) return;
-        onlineExecutor.execute(() -> {
+        executeOnlineSafely(() -> {
             try {
                 GuestAuthManager.AuthState auth = ensureOnlineAuth(false);
-                SupabaseService.SubmitActionResult result = submitEndTurnOnce(auth);
+                SupabaseService.SubmitActionV2Result result = submitEndTurnOnce(auth);
                 if (!result.accepted && isAuthError(new Exception(result.reason))) {
                     auth = ensureOnlineAuth(true);
                     result = submitEndTurnOnce(auth);
                 }
                 if (!result.accepted) {
-                    post(() -> controller.showBanner("TURN NOT SYNCED", SystemClock.uptimeMillis(), 900));
+                    handleActionSubmitRejected("TURN NOT SYNCED", result.reason, true);
+                } else if (result.kickoffGeneration > 0) {
+                    onlineKickoffGeneration = Math.max(onlineKickoffGeneration, result.kickoffGeneration);
+                    post(() -> controller.setOnlineKickoffGeneration(onlineKickoffGeneration));
                 }
             } catch (Exception e) {
                 if (isAuthError(e)) {
                     try {
                         GuestAuthManager.AuthState refreshed = ensureOnlineAuth(true);
-                        SupabaseService.SubmitActionResult retried = submitEndTurnOnce(refreshed);
+                        SupabaseService.SubmitActionV2Result retried = submitEndTurnOnce(refreshed);
                         if (!retried.accepted) {
-                            post(() -> controller.showBanner("TURN NOT SYNCED", SystemClock.uptimeMillis(), 900));
+                            handleActionSubmitRejected("TURN NOT SYNCED", retried.reason, true);
                         }
                         return;
                     } catch (Exception ignored) {
                     }
                 }
-                post(() -> controller.showBanner("TURN NOT SYNCED", SystemClock.uptimeMillis(), 900));
+                handleActionSubmitRejected("TURN NOT SYNCED", e.getMessage(), true);
             }
         });
     }
@@ -837,77 +1011,75 @@ public class GameView extends View {
             return;
         }
         if (onlineExecutor.isShutdown()) return;
-        onlineExecutor.execute(() -> {
+        executeOnlineSafely(() -> {
             try {
                 GuestAuthManager.AuthState auth = ensureOnlineAuth(false);
-                SupabaseService.SubmitActionResult result = submitKickoffReadyOnce(auth);
+                SupabaseService.SubmitActionV2Result result = submitKickoffReadyOnce(auth);
                 if (!result.accepted && isAuthError(new Exception(result.reason))) {
                     auth = ensureOnlineAuth(true);
                     result = submitKickoffReadyOnce(auth);
                 }
                 if (!result.accepted) {
-                    post(() -> {
-                        controller.clearOnlineInitialKickoffWaiting();
-                        controller.showBanner("KICKOFF NOT SYNCED", SystemClock.uptimeMillis(), 900);
-                    });
+                    handleActionSubmitRejected("KICKOFF NOT SYNCED", result.reason, true);
+                } else if (result.kickoffGeneration > 0) {
+                    onlineKickoffGeneration = Math.max(onlineKickoffGeneration, result.kickoffGeneration);
+                    post(() -> controller.setOnlineKickoffGeneration(onlineKickoffGeneration));
                 }
             } catch (Exception e) {
                 if (isAuthError(e)) {
                     try {
                         GuestAuthManager.AuthState refreshed = ensureOnlineAuth(true);
-                        SupabaseService.SubmitActionResult retried = submitKickoffReadyOnce(refreshed);
+                        SupabaseService.SubmitActionV2Result retried = submitKickoffReadyOnce(refreshed);
                         if (!retried.accepted) {
-                            post(() -> {
-                                controller.clearOnlineInitialKickoffWaiting();
-                                controller.showBanner("KICKOFF NOT SYNCED", SystemClock.uptimeMillis(), 900);
-                            });
+                            handleActionSubmitRejected("KICKOFF NOT SYNCED", retried.reason, true);
                         }
                         return;
                     } catch (Exception ignored) {
                     }
                 }
-                post(() -> {
-                    controller.clearOnlineInitialKickoffWaiting();
-                    controller.showBanner("KICKOFF NOT SYNCED", SystemClock.uptimeMillis(), 900);
-                });
+                handleActionSubmitRejected("KICKOFF NOT SYNCED", e.getMessage(), true);
             }
         });
     }
 
-    private SupabaseService.SubmitActionResult submitPlayCardOnce(GuestAuthManager.AuthState auth, CardId cardId)
+    private SupabaseService.SubmitActionV2Result submitPlayCardOnce(GuestAuthManager.AuthState auth, CardId cardId)
             throws Exception {
         if (auth == null || auth.session == null) throw new IllegalStateException("missing_auth");
         JSONObject payload = new JSONObject();
         payload.put("card_id", cardId.name());
-        return supabaseService.submitMatchAction(
+        return supabaseService.submitMatchActionV2(
                 auth.session.accessToken,
                 onlineMatchId,
                 "play_card",
-                payload
+                payload,
+                onlineLastActionSeq
         );
     }
 
-    private SupabaseService.SubmitActionResult submitEndTurnOnce(GuestAuthManager.AuthState auth)
+    private SupabaseService.SubmitActionV2Result submitEndTurnOnce(GuestAuthManager.AuthState auth)
             throws Exception {
         if (auth == null || auth.session == null) throw new IllegalStateException("missing_auth");
-        return supabaseService.submitMatchAction(
+        return supabaseService.submitMatchActionV2(
                 auth.session.accessToken,
                 onlineMatchId,
                 "end_turn",
-                new JSONObject()
+                new JSONObject(),
+                onlineLastActionSeq
         );
     }
 
-    private SupabaseService.SubmitActionResult submitKickoffReadyOnce(GuestAuthManager.AuthState auth)
+    private SupabaseService.SubmitActionV2Result submitKickoffReadyOnce(GuestAuthManager.AuthState auth)
             throws Exception {
         if (auth == null || auth.session == null) throw new IllegalStateException("missing_auth");
         JSONObject payload = new JSONObject();
-        payload.put("stage", "kickoff");
-        return supabaseService.submitMatchAction(
+        int generation = Math.max(0, controller.getOnlineKickoffGeneration());
+        payload.put("generation", generation);
+        return supabaseService.submitMatchActionV2(
                 auth.session.accessToken,
                 onlineMatchId,
-                "player_ready",
-                payload
+                "kickoff_ready",
+                payload,
+                onlineLastActionSeq
         );
     }
 
@@ -918,26 +1090,15 @@ public class GameView extends View {
         if (onlineActionPollInFlight) return;
         onlineActionPollInFlight = true;
 
-        final int afterSeq = onlineLastActionSeq;
-        onlineExecutor.execute(() -> {
+        boolean submitted = executeOnlineSafely(() -> {
             try {
                 GuestAuthManager.AuthState auth = ensureOnlineAuth(false);
-                List<SupabaseService.MatchAction> actions = supabaseService.fetchMatchActionsSince(
-                        auth.session.accessToken,
-                        onlineMatchId,
-                        afterSeq
-                );
-                ingestOnlineActions(auth.session.userId, actions);
+                drainOnlineActionPages(auth, onlineLastActionSeq);
             } catch (Exception e) {
                 if (isAuthError(e)) {
                     try {
                         GuestAuthManager.AuthState refreshed = ensureOnlineAuth(true);
-                        List<SupabaseService.MatchAction> retried = supabaseService.fetchMatchActionsSince(
-                                refreshed.session.accessToken,
-                                onlineMatchId,
-                                afterSeq
-                        );
-                        ingestOnlineActions(refreshed.session.userId, retried);
+                        drainOnlineActionPages(refreshed, onlineLastActionSeq);
                     } catch (Exception ignored) {
                     }
                 }
@@ -945,6 +1106,33 @@ public class GameView extends View {
                 onlineActionPollInFlight = false;
             }
         });
+        if (!submitted) {
+            onlineActionPollInFlight = false;
+        }
+    }
+
+    private void drainOnlineActionPages(GuestAuthManager.AuthState auth, int initialAfterSeq) throws Exception {
+        if (auth == null || auth.session == null) throw new IllegalStateException("missing_auth");
+        int cursor = Math.max(-1, initialAfterSeq);
+        int pageCount = 0;
+        boolean hasMore;
+        do {
+            SupabaseService.MatchActionPage page = supabaseService.fetchMatchActionsSinceV2(
+                    auth.session.accessToken,
+                    onlineMatchId,
+                    cursor,
+                    ONLINE_ACTION_PAGE_SIZE
+            );
+            List<SupabaseService.MatchAction> actions = page != null ? page.actions : null;
+            ingestOnlineActions(auth.session.userId, actions);
+            cursor = Math.max(cursor, maxSeq(actions));
+            hasMore = page != null && page.hasMore;
+            pageCount++;
+        } while (hasMore && pageCount < ONLINE_ACTION_MAX_PAGES_PER_POLL);
+
+        if (hasMore) {
+            post(this::pollOnlineMatchActions);
+        }
     }
 
     private void ingestOnlineActions(String localUserId, List<SupabaseService.MatchAction> actions) {
@@ -973,6 +1161,7 @@ public class GameView extends View {
             if (next == null) break;
             onlineActionBuffer.remove(expected);
             onlineLastActionSeq = next.seq;
+            Log.d(TAG, "ingest action seq=" + next.seq + " type=" + next.actionType + " actor=" + next.actorUserId);
             dispatchOnlineMatchAction(localUserId, next);
         }
 
@@ -993,7 +1182,7 @@ public class GameView extends View {
 
         String resolvedLocalUserId = localUserId != null ? localUserId : onlineLocalUserId;
         boolean fromSelf = resolvedLocalUserId != null && resolvedLocalUserId.equals(action.actorUserId);
-        if ("player_ready".equals(actionType) && isKickoffReadyPayload(action.payload)) {
+        if ("kickoff_ready".equals(actionType)) {
             handleKickoffReadyAction(fromSelf, action);
             return;
         }
@@ -1006,6 +1195,9 @@ public class GameView extends View {
                         submitOnlinePhaseState(action.createdAtEpochMs, action.seq);
                     }
                 });
+            }
+            if ("kickoff_ready".equals(actionType)) {
+                post(controller::clearOnlineActionAckPending);
             }
             return;
         }
@@ -1041,9 +1233,18 @@ public class GameView extends View {
     private void handleKickoffReadyAction(boolean fromSelf, SupabaseService.MatchAction action) {
         if (!onlineMode || !onlineGameplayReady || action == null) return;
         if (!controller.isOnlineInitialKickoffPending() || onlineKickoffStarted) return;
+        int generation = action.payload != null ? action.payload.optInt("generation", -1) : -1;
+        if (generation > 0) {
+            if (onlineKickoffGeneration > 0 && generation != onlineKickoffGeneration) {
+                return;
+            }
+            onlineKickoffGeneration = generation;
+            post(() -> controller.setOnlineKickoffGeneration(onlineKickoffGeneration));
+        }
 
         if (fromSelf) {
             onlineKickoffLocalReady = true;
+            post(controller::clearOnlineActionAckPending);
         } else {
             onlineKickoffRemoteReady = true;
         }
@@ -1070,7 +1271,8 @@ public class GameView extends View {
     private boolean isKickoffReadyPayload(JSONObject payload) {
         if (payload == null) return false;
         String stage = normalize(payload.optString("stage", ""));
-        return stage != null && "kickoff".equalsIgnoreCase(stage);
+        if (stage != null && "kickoff".equalsIgnoreCase(stage)) return true;
+        return payload.optInt("generation", -1) > 0;
     }
 
     private void connectOnlineRealtime(boolean forceRefresh) {
@@ -1080,7 +1282,7 @@ public class GameView extends View {
         if (onlineExecutor.isShutdown()) return;
         if (onlineRealtimeConnected || onlineRealtimeClient != null) return;
 
-        onlineExecutor.execute(() -> {
+        executeOnlineSafely(() -> {
             try {
                 GuestAuthManager.AuthState auth = ensureOnlineAuth(forceRefresh);
                 setupRealtimeClient(auth.session.accessToken);
@@ -1187,7 +1389,10 @@ public class GameView extends View {
         if (!isAttachedToWindow()) return;
         ExecutorService executor = onlineExecutor;
         if (executor == null || executor.isShutdown()) return;
-        executor.execute(task);
+        try {
+            executor.execute(task);
+        } catch (RejectedExecutionException ignored) {
+        }
     }
 
     private boolean isAuthoritativeLocalPlayer() {
@@ -1205,17 +1410,25 @@ public class GameView extends View {
         if (!onlineMode || !onlineGameplayReady || !isAuthoritativeLocalPlayer()) return;
         if (guestAuthManager == null || supabaseService == null || onlineExecutor == null) return;
         if (onlineExecutor.isShutdown()) return;
-        onlineExecutor.execute(() -> {
+        executeOnlineSafely(() -> {
             try {
                 GuestAuthManager.AuthState auth = ensureOnlineAuth(false);
                 JSONObject payload = buildPhaseStatePayload(sourceEpochMs, sourceSeq);
-                submitMatchActionWithRetry(auth, "phase_state", payload);
+                SupabaseService.SubmitActionV2Result result = submitMatchActionWithRetry(auth, "phase_state", payload);
+                if (!result.accepted && normalize(result.reason) != null
+                        && result.reason.toLowerCase().contains("seq_conflict")) {
+                    post(this::pollOnlineMatchActions);
+                }
             } catch (Exception e) {
                 if (isAuthError(e)) {
                     try {
                         GuestAuthManager.AuthState refreshed = ensureOnlineAuth(true);
                         JSONObject payload = buildPhaseStatePayload(sourceEpochMs, sourceSeq);
-                        submitMatchActionWithRetry(refreshed, "phase_state", payload);
+                        SupabaseService.SubmitActionV2Result result = submitMatchActionWithRetry(refreshed, "phase_state", payload);
+                        if (!result.accepted && normalize(result.reason) != null
+                                && result.reason.toLowerCase().contains("seq_conflict")) {
+                            post(this::pollOnlineMatchActions);
+                        }
                     } catch (Exception ignored) {
                     }
                 }
@@ -1276,15 +1489,23 @@ public class GameView extends View {
         if ((now - onlineLastResyncRequestElapsedMs) < ONLINE_RESYNC_REQUEST_MIN_GAP_MS) return;
         onlineLastResyncRequestElapsedMs = now;
 
-        onlineExecutor.execute(() -> {
+        executeOnlineSafely(() -> {
             try {
                 GuestAuthManager.AuthState auth = ensureOnlineAuth(false);
-                submitMatchActionWithRetry(auth, "resync_request", new JSONObject());
+                SupabaseService.SubmitActionV2Result result = submitMatchActionWithRetry(auth, "resync_request", new JSONObject());
+                if (!result.accepted && normalize(result.reason) != null
+                        && result.reason.toLowerCase().contains("seq_conflict")) {
+                    post(this::pollOnlineMatchActions);
+                }
             } catch (Exception e) {
                 if (isAuthError(e)) {
                     try {
                         GuestAuthManager.AuthState refreshed = ensureOnlineAuth(true);
-                        submitMatchActionWithRetry(refreshed, "resync_request", new JSONObject());
+                        SupabaseService.SubmitActionV2Result result = submitMatchActionWithRetry(refreshed, "resync_request", new JSONObject());
+                        if (!result.accepted && normalize(result.reason) != null
+                                && result.reason.toLowerCase().contains("seq_conflict")) {
+                            post(this::pollOnlineMatchActions);
+                        }
                     } catch (Exception ignored) {
                     }
                 }
@@ -1292,23 +1513,25 @@ public class GameView extends View {
         });
     }
 
-    private SupabaseService.SubmitActionResult submitMatchActionWithRetry(GuestAuthManager.AuthState auth,
-                                                                           String actionType,
-                                                                           JSONObject payload) throws Exception {
+    private SupabaseService.SubmitActionV2Result submitMatchActionWithRetry(GuestAuthManager.AuthState auth,
+                                                                             String actionType,
+                                                                             JSONObject payload) throws Exception {
         if (auth == null || auth.session == null) throw new IllegalStateException("missing_auth");
-        SupabaseService.SubmitActionResult result = supabaseService.submitMatchAction(
+        SupabaseService.SubmitActionV2Result result = supabaseService.submitMatchActionV2(
                 auth.session.accessToken,
                 onlineMatchId,
                 actionType,
-                payload
+                payload,
+                onlineLastActionSeq
         );
         if (!result.accepted && isAuthError(new Exception(result.reason))) {
             GuestAuthManager.AuthState refreshed = ensureOnlineAuth(true);
-            result = supabaseService.submitMatchAction(
+            result = supabaseService.submitMatchActionV2(
                     refreshed.session.accessToken,
                     onlineMatchId,
                     actionType,
-                    payload
+                    payload,
+                    onlineLastActionSeq
             );
         }
         return result;
@@ -1590,7 +1813,7 @@ public class GameView extends View {
         if (onlineStatusPollInFlight) return;
         onlineStatusPollInFlight = true;
 
-        onlineExecutor.execute(() -> {
+        boolean submitted = executeOnlineSafely(() -> {
             try {
                 GuestAuthManager.AuthState auth = ensureOnlineAuth(false);
                 SupabaseService.MatchSnapshot snapshot = supabaseService.fetchMatchSnapshot(
@@ -1675,10 +1898,14 @@ public class GameView extends View {
                 onlineStatusPollInFlight = false;
             }
         });
+        if (!submitted) {
+            onlineStatusPollInFlight = false;
+        }
     }
 
     private void shutdownOnlineExecutor() {
         removeCallbacks(onlineRealtimeReconnect);
+        removeCallbacks(onlinePresenceHeartbeat);
         onlineRealtimeReconnectScheduled = false;
         onlineRealtimeForceRefresh = false;
         shutdownOnlineRealtimeClient();

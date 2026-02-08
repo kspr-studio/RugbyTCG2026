@@ -30,8 +30,8 @@ android {
         applicationId = "com.roguegamestudio.rugbytcg"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
         buildConfigField("String", "SUPABASE_URL", quoteForBuildConfig(supabaseUrl))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", quoteForBuildConfig(supabasePublishableKey))
 

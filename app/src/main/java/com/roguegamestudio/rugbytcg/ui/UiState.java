@@ -59,4 +59,6 @@ public class UiState {
     // Online kickoff handshake
     public boolean onlineInitialKickoffPending = false;
     public boolean onlineKickoffWaiting = false;
+    public boolean onlineActionAckPending = false;
+    public int onlineKickoffGeneration = 0;
 }
