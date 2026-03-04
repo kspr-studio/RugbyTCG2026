@@ -50,6 +50,7 @@ public class GameController implements AiController.Delegate {
     private final UiCallbacks uiCallbacks;
     private final TimeSource timeSource;
     private final SoundController sound;
+    private final AnnouncerSink announcer;
     private final Random rng = new Random();
     private TutorialController tutorial;
 
@@ -74,6 +75,26 @@ public class GameController implements AiController.Delegate {
                           TimeSource timeSource,
                           UiCallbacks uiCallbacks,
                           SoundController sound) {
+        this(
+                state,
+                ui,
+                layoutCalculator,
+                layoutSpec,
+                timeSource,
+                uiCallbacks,
+                sound,
+                AnnouncerSink.NO_OP
+        );
+    }
+
+    public GameController(GameState state,
+                          UiState ui,
+                          LayoutCalculator layoutCalculator,
+                          LayoutSpec layoutSpec,
+                          TimeSource timeSource,
+                          UiCallbacks uiCallbacks,
+                          SoundController sound,
+                          AnnouncerSink announcer) {
         this.state = state;
         this.ui = ui;
         this.layoutCalculator = layoutCalculator;
@@ -81,6 +102,7 @@ public class GameController implements AiController.Delegate {
         this.timeSource = timeSource;
         this.uiCallbacks = uiCallbacks;
         this.sound = sound;
+        this.announcer = announcer != null ? announcer : AnnouncerSink.NO_OP;
         this.rules = new RulesEngine(BALL_MIN, BALL_MAX);
         this.matchEngine = new MatchEngine(timeSource);
         this.turnEngine = new TurnEngine(timeSource);
@@ -162,6 +184,7 @@ public class GameController implements AiController.Delegate {
         playerStarts = rng.nextBoolean();
         long now = timeSource.nowUptimeMs();
         showBanner(playerStarts ? "HEADS - GOING FIRST" : "TAILS - GOING SECOND", now, 1200);
+        announce(AnnouncerEvent.Type.MATCH_START, AnnouncerEvent.Side.NONE, false);
 
         ui.playLog.clear();
         ui.logScrollY = 0f;
@@ -230,6 +253,7 @@ public class GameController implements AiController.Delegate {
 
         state.ballPos = 0;
         state.youWonLastPhase = false;
+        state.youLostLastPhase = false;
 
         state.yourMomentum = 8;
         state.oppMomentum = 8;
@@ -282,6 +306,7 @@ public class GameController implements AiController.Delegate {
 
         state.ballPos = 0;
         state.youWonLastPhase = false;
+        state.youLostLastPhase = false;
 
         state.yourMomentum = 8;
         state.oppMomentum = 8;
@@ -439,6 +464,7 @@ public class GameController implements AiController.Delegate {
         state.yourMomentum = 8 + state.nextTurnMomentumBonusYou;
         state.nextTurnMomentumBonusYou = 0;
         turnEngine.setTurnState(TurnEngine.TurnState.PLAYER);
+        announce(AnnouncerEvent.Type.TURN_START, AnnouncerEvent.Side.HOME, false);
         requestLayoutAndInvalidate();
     }
 
@@ -459,6 +485,7 @@ public class GameController implements AiController.Delegate {
         }
         state.oppMomentum = 8 + state.nextTurnMomentumBonusOpp;
         state.nextTurnMomentumBonusOpp = 0;
+        announce(AnnouncerEvent.Type.TURN_START, AnnouncerEvent.Side.AWAY, false);
         requestLayoutAndInvalidate();
     }
 
@@ -494,6 +521,7 @@ public class GameController implements AiController.Delegate {
         turnEngine.setTurnState(TurnEngine.TurnState.AI_THINKING);
         state.driveUsedThisTurnOpp = false;
         showBanner("OPPONENT THINKING...", now, delayMs);
+        announce(AnnouncerEvent.Type.TURN_START, AnnouncerEvent.Side.AWAY, false);
 
         uiCallbacks.postDelayed(() -> {
             if (state.matchOver) {
@@ -592,14 +620,17 @@ public class GameController implements AiController.Delegate {
             showBanner("YOU WIN THE PHASE", now, 1500);
             triggerFlash(0xFF50C878, 420);
             sound.playTone(ToneGenerator.TONE_PROP_BEEP2, 160);
+            announce(AnnouncerEvent.Type.PHASE_RESULT, AnnouncerEvent.Side.HOME, false);
         } else if (resolution.outcome == RulesEngine.PhaseOutcome.OPP_WIN) {
             showBanner("YOU LOSE THE PHASE", now, 1500);
             triggerFlash(0xFFDC5050, 420);
             sound.playTone(ToneGenerator.TONE_PROP_NACK, 200);
+            announce(AnnouncerEvent.Type.PHASE_RESULT, AnnouncerEvent.Side.AWAY, false);
         } else {
             showBanner("TIE", now, 1500);
             triggerFlash(0xFFA0A0A0, 320);
             sound.playTone(ToneGenerator.TONE_PROP_BEEP, 140);
+            announce(AnnouncerEvent.Type.PHASE_RESULT, AnnouncerEvent.Side.NONE, false);
         }
 
         if (resolution.homeTry) {
@@ -607,6 +638,7 @@ public class GameController implements AiController.Delegate {
             showBanner(ui.localPlayerLabel.toUpperCase() + " TRY! +" + TRY_POINTS, now, 1600);
             triggerFlash(0xFFFFD778, 600);
             sound.playTone(ToneGenerator.TONE_PROP_BEEP2, 220);
+            announce(AnnouncerEvent.Type.TRY_SCORED, AnnouncerEvent.Side.HOME, true);
 
             turnEngine.setTurnState(TurnEngine.TurnState.AI_THINKING);
             final long roundRestartEpochMs = nextTurnStartEpochMs > 0L
@@ -627,6 +659,7 @@ public class GameController implements AiController.Delegate {
             showBanner(ui.opponentPlayerLabel.toUpperCase() + " TRY! +" + TRY_POINTS, now, 1600);
             triggerFlash(0xFFFF8C8C, 600);
             sound.playTone(ToneGenerator.TONE_PROP_NACK, 220);
+            announce(AnnouncerEvent.Type.TRY_SCORED, AnnouncerEvent.Side.AWAY, true);
 
             turnEngine.setTurnState(TurnEngine.TurnState.AI_THINKING);
             final long roundRestartEpochMs = nextTurnStartEpochMs > 0L
@@ -675,6 +708,12 @@ public class GameController implements AiController.Delegate {
             sound.playTone(ToneGenerator.TONE_PROP_BEEP, 140);
             triggerFlash(0xFFFFE1A0, 160);
         }
+        announce(
+                AnnouncerEvent.Type.CARD_PLAYED,
+                forYou ? AnnouncerEvent.Side.HOME : AnnouncerEvent.Side.AWAY,
+                card,
+                false
+        );
 
         if (onlineGameplayMode && forYou && onlineActionListener != null && card.id != null) {
             onlineActionListener.onLocalPlayCard(card.id);
@@ -722,6 +761,7 @@ public class GameController implements AiController.Delegate {
             sound.playTone(ToneGenerator.TONE_PROP_BEEP, 140);
             triggerFlash(0xFFFFE1A0, 160);
         }
+        announce(AnnouncerEvent.Type.CARD_PLAYED, AnnouncerEvent.Side.AWAY, card, false);
     }
 
     private void removeFromOpponentHand(CardId cardId) {
@@ -799,6 +839,11 @@ public class GameController implements AiController.Delegate {
         ui.matchBannerDismissAllowedAtMs = now + 2000L;
         triggerFlash(homeWon ? 0xFF50C878 : 0xFFDC5050, 700);
         sound.playTone(homeWon ? ToneGenerator.TONE_PROP_BEEP2 : ToneGenerator.TONE_PROP_NACK, 220);
+        announce(
+                AnnouncerEvent.Type.MATCH_END,
+                homeWon ? AnnouncerEvent.Side.HOME : AnnouncerEvent.Side.AWAY,
+                true
+        );
         uiCallbacks.invalidate();
     }
 
@@ -818,6 +863,7 @@ public class GameController implements AiController.Delegate {
         showBanner("MATCH TIED", now, 2200);
         triggerFlash(0xFFA0A0A0, 700);
         sound.playTone(ToneGenerator.TONE_PROP_BEEP, 200);
+        announce(AnnouncerEvent.Type.MATCH_END, AnnouncerEvent.Side.NONE, true);
         uiCallbacks.invalidate();
     }
 
@@ -842,6 +888,27 @@ public class GameController implements AiController.Delegate {
     public void requestLayoutAndInvalidate() {
         layoutCalculator.layoutAll(layoutSpec, state);
         uiCallbacks.invalidate();
+    }
+
+    private void announce(AnnouncerEvent.Type type, AnnouncerEvent.Side side, boolean critical) {
+        announce(type, side, null, critical);
+    }
+
+    private void announce(AnnouncerEvent.Type type, AnnouncerEvent.Side side, Card card, boolean critical) {
+        if (tutorialMode) return;
+        AnnouncerEvent event = new AnnouncerEvent(
+                type,
+                side,
+                card != null ? card.id : null,
+                card != null ? card.name : "",
+                state.homeScore,
+                state.awayScore,
+                state.ballPos,
+                matchEngine.getMatchElapsedMs(state),
+                critical,
+                timeSource.nowUptimeMs()
+        );
+        announcer.onAnnouncerEvent(event);
     }
 
     public void applyAuthoritativePhaseState(boolean localIsPlayerA,

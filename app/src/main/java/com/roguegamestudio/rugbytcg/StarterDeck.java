@@ -75,15 +75,15 @@ public final class StarterDeck {
 
         // 7) Counter Ruck: if you lost last phase, +3 PWR this phase
         deck.add(new PlayCard(
-                CardId.COUNTER_RUCK, "Counter Ruck", "If you lost last phase, gain +3 PWR this phase.",
-                2, // cost (tuneable)
-                (ctx, forYou) -> {
-                    boolean lostLastPhase = forYou ? !ctx.youWonLastPhase : ctx.youWonLastPhase;
-                    if (lostLastPhase) {
-                        if (forYou) ctx.tempPwrBonusYou += 3;
-                        else ctx.tempPwrBonusOpp += 3;
-                    }
+            CardId.COUNTER_RUCK, "Counter Ruck", "If you lost last phase, gain +3 PWR this phase.",
+            2, // cost (tuneable)
+            (ctx, forYou) -> {
+                boolean lostLastPhase = forYou ? ctx.youLostLastPhase : ctx.youWonLastPhase;
+                if (lostLastPhase) {
+                    if (forYou) ctx.tempPwrBonusYou += 3;
+                    else ctx.tempPwrBonusOpp += 3;
                 }
+            }
         ));
 
         // 8) Quick Pass: +2 SKL this phase

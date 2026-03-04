@@ -148,14 +148,17 @@ public class RulesEngine {
         PhaseOutcome outcome;
         if (yourTotal > oppTotal) {
             state.youWonLastPhase = true;
+            state.youLostLastPhase = false;
             state.ballPos = clamp(state.ballPos + 1, ballMin, ballMax);
             outcome = PhaseOutcome.YOU_WIN;
         } else if (oppTotal > yourTotal) {
             state.youWonLastPhase = false;
+            state.youLostLastPhase = true;
             state.ballPos = clamp(state.ballPos - 1, ballMin, ballMax);
             outcome = PhaseOutcome.OPP_WIN;
         } else {
             state.youWonLastPhase = false;
+            state.youLostLastPhase = false;
             outcome = PhaseOutcome.TIE;
         }
 

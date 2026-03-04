@@ -37,6 +37,7 @@ import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -1316,6 +1317,98 @@ public class MenuActivity extends AppCompatActivity {
                 int clamped = SettingsPrefs.clampPercent(progress);
                 crowdValue.setText(clamped + "%");
                 SettingsPrefs.setCrowdVolumePercent(MenuActivity.this, clamped);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+
+        View sectionSpacer = new View(this);
+        LinearLayout.LayoutParams spacerParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(10)
+        );
+        content.addView(sectionSpacer, spacerParams);
+
+        TextView announcerLabel = new TextView(this);
+        announcerLabel.setText("Announcer");
+        announcerLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        announcerLabel.setTextColor(Color.BLACK);
+        content.addView(announcerLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        Switch announcerToggle = new Switch(this);
+        announcerToggle.setText("Enable In Single Player");
+        announcerToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        announcerToggle.setChecked(SettingsPrefs.getAnnouncerEnabled(this));
+        LinearLayout.LayoutParams toggleParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        toggleParams.topMargin = dp(4);
+        content.addView(announcerToggle, toggleParams);
+
+        TextView announcerVolumeLabel = new TextView(this);
+        announcerVolumeLabel.setText("Announcer Volume");
+        announcerVolumeLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        announcerVolumeLabel.setTextColor(Color.BLACK);
+        LinearLayout.LayoutParams announcerVolumeLabelParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        announcerVolumeLabelParams.topMargin = dp(8);
+        content.addView(announcerVolumeLabel, announcerVolumeLabelParams);
+
+        TextView announcerValue = new TextView(this);
+        announcerValue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        announcerValue.setTextColor(Color.DKGRAY);
+        announcerValue.setGravity(Gravity.END);
+        LinearLayout.LayoutParams announcerValueParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        announcerValueParams.topMargin = dp(4);
+        content.addView(announcerValue, announcerValueParams);
+
+        SeekBar announcerSlider = new SeekBar(this);
+        announcerSlider.setMax(100);
+        int initialAnnouncerVolume = SettingsPrefs.getAnnouncerVolumePercent(this);
+        announcerSlider.setProgress(initialAnnouncerVolume);
+        announcerValue.setText(initialAnnouncerVolume + "%");
+        LinearLayout.LayoutParams announcerSliderParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        announcerSliderParams.topMargin = dp(4);
+        content.addView(announcerSlider, announcerSliderParams);
+
+        Runnable syncAnnouncerControls = () -> {
+            boolean enabled = announcerToggle.isChecked();
+            announcerSlider.setEnabled(enabled);
+            float alpha = enabled ? 1f : 0.45f;
+            announcerValue.setAlpha(alpha);
+            announcerVolumeLabel.setAlpha(alpha);
+        };
+        syncAnnouncerControls.run();
+
+        announcerToggle.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            SettingsPrefs.setAnnouncerEnabled(MenuActivity.this, isChecked);
+            syncAnnouncerControls.run();
+        });
+
+        announcerSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int clamped = SettingsPrefs.clampPercent(progress);
+                announcerValue.setText(clamped + "%");
+                SettingsPrefs.setAnnouncerVolumePercent(MenuActivity.this, clamped);
             }
 
             @Override

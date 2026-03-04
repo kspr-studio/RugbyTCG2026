@@ -13,8 +13,10 @@ import android.view.View;
 
 import com.roguegamestudio.rugbytcg.assets.CardArtCache;
 import com.roguegamestudio.rugbytcg.assets.TextureCache;
+import com.roguegamestudio.rugbytcg.audio.AnnouncerController;
 import com.roguegamestudio.rugbytcg.audio.SoundController;
 import com.roguegamestudio.rugbytcg.core.GameState;
+import com.roguegamestudio.rugbytcg.engine.AnnouncerSink;
 import com.roguegamestudio.rugbytcg.engine.GameController;
 import com.roguegamestudio.rugbytcg.engine.TurnEngine;
 import com.roguegamestudio.rugbytcg.multiplayer.GuestAuthManager;
@@ -80,6 +82,7 @@ public class GameView extends View {
     private final GameRenderer renderer;
     private final TimeSource timeSource = new SystemTimeSource();
     private final SoundController sound = new SoundController();
+    private final AnnouncerController announcer;
     private final GameController controller;
     private final TutorialController tutorial = new TutorialController();
     private final UiCallbacks uiCallbacks;
@@ -267,8 +270,11 @@ public class GameView extends View {
             }
         };
 
+        boolean enableSinglePlayerAnnouncer = !onlineMode && !initialTutorialMode;
+        announcer = enableSinglePlayerAnnouncer ? new AnnouncerController(context) : null;
+        AnnouncerSink announcerSink = announcer != null ? announcer : AnnouncerSink.NO_OP;
         sound.init();
-        controller = new GameController(state, ui, layoutCalculator, layout, timeSource, uiCallbacks, sound);
+        controller = new GameController(state, ui, layoutCalculator, layout, timeSource, uiCallbacks, sound, announcerSink);
         controller.setTutorialController(tutorial);
         if (onlineMode) {
             controller.setOnlineActionListener(new GameController.OnlineActionListener() {
@@ -381,6 +387,9 @@ public class GameView extends View {
         }
         shutdownOnlineRealtimeClient();
         shutdownOnlineExecutor();
+        if (announcer != null) {
+            announcer.release();
+        }
         sound.release();
         super.onDetachedFromWindow();
     }

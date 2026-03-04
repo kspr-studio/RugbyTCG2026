@@ -26,6 +26,10 @@ android {
         buildConfig = true
     }
 
+    androidResources {
+        noCompress += "wav"
+    }
+
     defaultConfig {
         applicationId = "com.roguegamestudio.rugbytcg"
         minSdk = 24

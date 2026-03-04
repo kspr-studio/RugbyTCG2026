@@ -13,7 +13,7 @@ public class TutorialRenderer {
     public void drawTutorialOverlay(Canvas c, RenderContext ctx, LayoutSpec layout, TutorialController tutorial, DragState dragState) {
         if (tutorial == null || !tutorial.isActive()) return;
         RectF target = tutorial.getHighlightRect(layout, dragState, ctx.dp(1));
-        ctx.paint.setColor(Color.argb(240, 0, 0, 0));
+        ctx.paint.setColor(Color.argb(240, 13, 13, 13));
 
         if (tutorial.getStep() == TutorialController.TUT_PLAY_FLANKER && dragState.dragging != null) {
             Path p = new Path();

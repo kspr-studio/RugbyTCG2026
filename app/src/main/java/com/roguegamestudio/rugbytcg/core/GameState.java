@@ -22,6 +22,7 @@ public class GameState {
 
     // Last phase outcome from YOUR perspective
     public boolean youWonLastPhase = false;
+    public boolean youLostLastPhase = false;
 
     // Momentum (mana) for current turn
     public int yourMomentum = 5;
