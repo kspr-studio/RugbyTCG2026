@@ -71,7 +71,7 @@ public class HudRenderer {
 
         boolean tutorialActive = tutorial != null && tutorial.isActive();
         long remaining = tutorialActive ? 0L : Math.max(0L, turnEngine.getTurnDisplayRemainingMs());
-        String timer = formatMmSs(remaining);
+        String timer = turnEngine.isTurnTimeoutEnabled() ? formatMmSs(remaining) : "--:--";
         String text = timer;
         boolean localTurn = turnEngine.getTurnState() == TurnEngine.TurnState.PLAYER;
         ctx.paint.setColor(localTurn ? Color.rgb(70, 200, 120) : Color.rgb(220, 70, 70));

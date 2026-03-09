@@ -29,7 +29,7 @@ public class HandRenderer {
             ctx.paint.setColor(Color.WHITE);
             c.drawText(prefix, momentumX, momentumY, ctx.paint);
             float prefixW = ctx.paint.measureText(prefix);
-            boolean flashOn = ((now / 300L) % 2L) == 0L;
+            boolean flashOn = ((now / 180L) % 2L) == 0L;
             int alpha = flashOn ? 255 : 80;
             ctx.paint.setColor(Color.argb(alpha, 255, 255, 255));
             c.drawText(String.valueOf(state.yourMomentum), momentumX + prefixW, momentumY, ctx.paint);

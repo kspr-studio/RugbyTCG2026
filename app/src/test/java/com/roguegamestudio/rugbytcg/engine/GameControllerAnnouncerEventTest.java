@@ -67,7 +67,7 @@ public class GameControllerAnnouncerEventTest {
     }
 
     @Test
-    public void resolvePhase_try_emitsPhaseAndTryEvents() {
+    public void resolvePhase_try_emitsTryWithoutPhaseResult() {
         CapturingSink sink = new CapturingSink();
         GameState state = new GameState();
         state.ballPos = 2;
@@ -94,9 +94,20 @@ public class GameControllerAnnouncerEventTest {
 
         controller.resolvePhase();
 
-        assertTrue(sink.containsType(AnnouncerEvent.Type.PHASE_RESULT));
+        assertEquals(0, sink.countOfType(AnnouncerEvent.Type.PHASE_RESULT));
         AnnouncerEvent tryEvent = sink.lastOfType(AnnouncerEvent.Type.TRY_SCORED);
         assertEquals(AnnouncerEvent.Side.HOME, tryEvent.side);
+    }
+
+    @Test
+    public void resolvePhase_noTry_emitsPhaseResultOnly() {
+        CapturingSink sink = new CapturingSink();
+        GameController controller = newController(sink);
+
+        controller.resolvePhase();
+
+        assertTrue(sink.containsType(AnnouncerEvent.Type.PHASE_RESULT));
+        assertEquals(0, sink.countOfType(AnnouncerEvent.Type.TRY_SCORED));
     }
 
     @Test
@@ -119,6 +130,35 @@ public class GameControllerAnnouncerEventTest {
         );
 
         controller.endMatchByScore();
+
+        AnnouncerEvent event = sink.lastOfType(AnnouncerEvent.Type.MATCH_END);
+        assertEquals(AnnouncerEvent.Side.HOME, event.side);
+    }
+
+    @Test
+    public void tick_matchClockExpiry_emitsMatchEndWinner() {
+        CapturingSink sink = new CapturingSink();
+        GameState state = new GameState();
+        state.homeScore = 15;
+        state.awayScore = 10;
+        state.matchStartElapsedMs = 1_000L;
+        state.matchDurationMs = 180_000L;
+        UiState ui = new UiState();
+        FakeTimeSource timeSource = new FakeTimeSource();
+        timeSource.uptimeMs = 181_100L;
+
+        GameController controller = new GameController(
+                state,
+                ui,
+                new NoOpLayoutCalculator(),
+                new LayoutSpec(),
+                timeSource,
+                new NoOpUiCallbacks(),
+                new SoundController(),
+                sink
+        );
+
+        controller.tick();
 
         AnnouncerEvent event = sink.lastOfType(AnnouncerEvent.Type.MATCH_END);
         assertEquals(AnnouncerEvent.Side.HOME, event.side);
@@ -161,6 +201,14 @@ public class GameControllerAnnouncerEventTest {
                 if (event.type == type) return true;
             }
             return false;
+        }
+
+        int countOfType(AnnouncerEvent.Type type) {
+            int count = 0;
+            for (AnnouncerEvent event : events) {
+                if (event.type == type) count++;
+            }
+            return count;
         }
 
         AnnouncerEvent lastOfType(AnnouncerEvent.Type type) {

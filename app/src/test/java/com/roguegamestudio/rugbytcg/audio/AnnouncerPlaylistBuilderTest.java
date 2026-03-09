@@ -13,7 +13,7 @@ import static org.junit.Assert.assertEquals;
 
 public class AnnouncerPlaylistBuilderTest {
     @Test
-    public void buildPlaylist_cardPlayedHome_usesHomePlaysAndCardClip() {
+    public void buildPlaylist_cardPlayedHome_usesCardClipOnly() {
         AnnouncerEvent event = event(
                 AnnouncerEvent.Type.CARD_PLAYED,
                 AnnouncerEvent.Side.HOME,
@@ -24,14 +24,11 @@ public class AnnouncerPlaylistBuilderTest {
 
         List<String> playlist = AnnouncerPlaylistBuilder.buildPlaylist(event);
 
-        assertEquals(Arrays.asList(
-                "snd/announcer/home_plays.wav",
-                "snd/announcer/card_quick_pass.wav"
-        ), playlist);
+        assertEquals(Collections.singletonList("snd/announcer/card_quick_pass.wav"), playlist);
     }
 
     @Test
-    public void buildPlaylist_tryScored_usesTryClipAndScoreBlock() {
+    public void buildPlaylist_tryScored_usesTryClipOnly() {
         AnnouncerEvent event = event(
                 AnnouncerEvent.Type.TRY_SCORED,
                 AnnouncerEvent.Side.HOME,
@@ -43,12 +40,7 @@ public class AnnouncerPlaylistBuilderTest {
         List<String> playlist = AnnouncerPlaylistBuilder.buildPlaylist(event);
 
         assertEquals(Arrays.asList(
-                "snd/announcer/home_scores_try.wav",
-                "snd/announcer/score.wav",
-                "snd/announcer/home.wav",
-                "snd/announcer/num_15.wav",
-                "snd/announcer/away.wav",
-                "snd/announcer/num_10.wav"
+                "snd/announcer/home_scores_try.wav"
         ), playlist);
     }
 
@@ -65,6 +57,7 @@ public class AnnouncerPlaylistBuilderTest {
         List<String> playlist = AnnouncerPlaylistBuilder.buildPlaylist(event);
 
         assertEquals(Arrays.asList(
+                "snd/announcer/kickoff.wav",
                 "snd/announcer/full_time.wav",
                 "snd/announcer/match_tied.wav",
                 "snd/announcer/score.wav",
@@ -76,7 +69,7 @@ public class AnnouncerPlaylistBuilderTest {
     }
 
     @Test
-    public void buildPlaylist_unknownScore_omitsScoreBlock() {
+    public void buildPlaylist_tryScored_unknownScore_stillUsesTryClipOnly() {
         AnnouncerEvent event = event(
                 AnnouncerEvent.Type.TRY_SCORED,
                 AnnouncerEvent.Side.AWAY,
@@ -91,7 +84,7 @@ public class AnnouncerPlaylistBuilderTest {
     }
 
     @Test
-    public void buildPlaylist_cardIdMapping_usesChancerClipForOpportunist() {
+    public void buildPlaylist_cardIdMapping_usesChancerClipForOpportunistOnly() {
         AnnouncerEvent event = event(
                 AnnouncerEvent.Type.CARD_PLAYED,
                 AnnouncerEvent.Side.AWAY,
@@ -102,10 +95,7 @@ public class AnnouncerPlaylistBuilderTest {
 
         List<String> playlist = AnnouncerPlaylistBuilder.buildPlaylist(event);
 
-        assertEquals(Arrays.asList(
-                "snd/announcer/away_plays.wav",
-                "snd/announcer/card_opportunist.wav"
-        ), playlist);
+        assertEquals(Collections.singletonList("snd/announcer/card_opportunist.wav"), playlist);
     }
 
     private static AnnouncerEvent event(AnnouncerEvent.Type type,

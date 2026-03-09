@@ -13,3 +13,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+tools/match-bot/node_modules/
+tools/match-bot/.bot-session.json
+tools/match-bot/.bot-state.json
+tools/match-bot/.bot.pid
+tools/match-bot/.bot.log

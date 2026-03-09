@@ -28,7 +28,7 @@ public final class AnnouncerController implements AnnouncerSink {
     private static final String TAG = "AnnouncerController";
     private static final int MAX_PENDING_ANNOUNCEMENTS = 8;
     private static final long CLIP_WAIT_SLICE_MS = 120L;
-    private static final float PLAYBACK_SPEED = 3.0f;
+    private static final float PLAYBACK_SPEED = 1.38f;
 
     private final Context appContext;
     private final AssetManager assetManager;
@@ -86,15 +86,16 @@ public final class AnnouncerController implements AnnouncerSink {
     private void offerLocked(PendingAnnouncement incoming) {
         if (incoming == null || incoming.clips.isEmpty()) return;
 
-        if (queue.size() < MAX_PENDING_ANNOUNCEMENTS) {
+        if (incoming.critical) {
+            removeAllNonCriticalLocked();
+            while (queue.size() >= MAX_PENDING_ANNOUNCEMENTS) {
+                queue.pollFirst();
+            }
             queue.addLast(incoming);
             return;
         }
 
-        if (incoming.critical) {
-            if (!removeOldestNonCriticalLocked()) {
-                queue.pollFirst();
-            }
+        if (queue.size() < MAX_PENDING_ANNOUNCEMENTS) {
             queue.addLast(incoming);
             return;
         }
@@ -114,6 +115,15 @@ public final class AnnouncerController implements AnnouncerSink {
             }
         }
         return false;
+    }
+
+    private void removeAllNonCriticalLocked() {
+        Iterator<PendingAnnouncement> iterator = queue.iterator();
+        while (iterator.hasNext()) {
+            if (!iterator.next().critical) {
+                iterator.remove();
+            }
+        }
     }
 
     private void scheduleDrain() {

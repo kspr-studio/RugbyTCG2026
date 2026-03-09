@@ -11,7 +11,14 @@ import com.roguegamestudio.rugbytcg.core.GameState;
 import java.util.List;
 
 public class RulesEngine {
-    public enum PlayFailReason { NONE, NO_BOARD, NO_MOMENTUM, DRIVE_USED }
+    public enum PlayFailReason {
+        NONE,
+        NO_BOARD,
+        NO_MOMENTUM,
+        DRIVE_USED,
+        QUICK_PASS_NEEDS_TWO_PLAYERS,
+        TIGHT_PLAY_NEEDS_THREE_PLAYERS
+    }
 
     public static class PlayResult {
         public final boolean success;
@@ -70,6 +77,20 @@ public class RulesEngine {
             boolean used = forYou ? state.driveUsedThisTurnYou : state.driveUsedThisTurnOpp;
             if (used) {
                 return new PlayResult(false, PlayFailReason.DRIVE_USED);
+            }
+        }
+
+        if (card.id == CardId.QUICK_PASS) {
+            int boardCount = forYou ? state.yourBoard.size() : state.oppBoard.size();
+            if (boardCount < 2) {
+                return new PlayResult(false, PlayFailReason.QUICK_PASS_NEEDS_TWO_PLAYERS);
+            }
+        }
+
+        if (card.id == CardId.TIGHT_PLAY) {
+            int boardCount = forYou ? state.yourBoard.size() : state.oppBoard.size();
+            if (boardCount < 3) {
+                return new PlayResult(false, PlayFailReason.TIGHT_PLAY_NEEDS_THREE_PLAYERS);
             }
         }
 

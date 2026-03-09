@@ -8,6 +8,8 @@ public class TurnEngine {
     private final TimeSource timeSource;
     private long turnStartElapsedMs = 0L;
     private long turnDurationMs = 10_000L;
+    // Multiplayer uses infinite-turn behavior (no auto-timeout); timer state is advisory only.
+    private boolean turnTimeoutEnabled = false;
     private boolean turnTimeoutHandled = false;
     private TurnState turnState = TurnState.PLAYER;
 
@@ -45,6 +47,15 @@ public class TurnEngine {
         return turnDurationMs;
     }
 
+    public void setTurnTimeoutEnabled(boolean enabled) {
+        turnTimeoutEnabled = enabled;
+        turnTimeoutHandled = false;
+    }
+
+    public boolean isTurnTimeoutEnabled() {
+        return turnTimeoutEnabled;
+    }
+
     public long getTurnRemainingMs() {
         if (turnStartElapsedMs <= 0L) return turnDurationMs;
         long now = timeSource.nowElapsedMs();
@@ -65,6 +76,7 @@ public class TurnEngine {
     }
 
     public boolean shouldTimeout() {
+        if (!turnTimeoutEnabled) return false;
         if (turnState != TurnState.PLAYER) return false;
         if (turnTimeoutHandled) return false;
         if (getTurnRemainingMs() <= 0L) {

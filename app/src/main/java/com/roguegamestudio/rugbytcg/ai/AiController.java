@@ -126,6 +126,8 @@ public class AiController {
             if ((c instanceof PlayCard || c instanceof TacticCard) && state.oppBoard.isEmpty()) continue;
             if (rules.cardCost(c) > state.oppMomentum) continue;
             if (c.id == CardId.DRIVE && state.driveUsedThisTurnOpp) continue;
+            if (c.id == CardId.QUICK_PASS && state.oppBoard.size() < 2) continue;
+            if (c.id == CardId.TIGHT_PLAY && state.oppBoard.size() < 3) continue;
             int score = aiUtilityScore(c);
             if (score > bestScore) {
                 bestScore = score;

@@ -38,6 +38,8 @@ public class GameController implements AiController.Delegate {
     private static final int BALL_MAX = 3;
     private static final int TRY_POINTS = 5;
     private static final int HAND_MAX = 7;
+    private static final long MATCH_DURATION_MS = 3L * 60L * 1000L;
+    private static final long MATCH_START_ANNOUNCE_WINDOW_MS = 1500L;
 
     private final GameState state;
     private final UiState ui;
@@ -66,6 +68,7 @@ public class GameController implements AiController.Delegate {
     private boolean onlineLocalIsPlayerA = true;
     private boolean tutorialMode = false;
     private boolean onlineGameplayMode = false;
+    private boolean matchStartAnnounced = false;
     private OnlineActionListener onlineActionListener;
 
     public GameController(GameState state,
@@ -175,16 +178,17 @@ public class GameController implements AiController.Delegate {
         ui.onlineActionAckPending = false;
         ui.onlineKickoffGeneration = 0;
         ui.matchBannerDismissAllowedAtMs = 0L;
+        matchStartAnnounced = false;
         rng.setSeed(System.nanoTime());
         setPlayerLabels("HOME", "AWAY");
         ui.matchWinBannerSticky = false;
         state.hideBanner();
-        matchEngine.resetMatch(state, 3L * 60L * 1000L);
+        matchEngine.resetMatch(state, MATCH_DURATION_MS);
 
         playerStarts = rng.nextBoolean();
         long now = timeSource.nowUptimeMs();
         showBanner(playerStarts ? "HEADS - GOING FIRST" : "TAILS - GOING SECOND", now, 1200);
-        announce(AnnouncerEvent.Type.MATCH_START, AnnouncerEvent.Side.NONE, false);
+        announceMatchStart();
 
         ui.playLog.clear();
         ui.logScrollY = 0f;
@@ -208,9 +212,10 @@ public class GameController implements AiController.Delegate {
         ui.onlineKickoffWaiting = false;
         ui.onlineActionAckPending = false;
         ui.matchBannerDismissAllowedAtMs = 0L;
+        matchStartAnnounced = false;
         ui.matchWinBannerSticky = false;
         state.hideBanner();
-        matchEngine.resetMatchAtElapsed(state, 3L * 60L * 1000L, epochToElapsed(matchStartEpochMs));
+        matchEngine.resetMatchAtElapsed(state, MATCH_DURATION_MS, epochToElapsed(matchStartEpochMs));
 
         ui.playLog.clear();
         ui.logScrollY = 0f;
@@ -219,6 +224,9 @@ public class GameController implements AiController.Delegate {
         ui.inspectCard = null;
         ui.inspectOpponent = false;
 
+        if (!waitForInitialKickoff && isFreshMatchStartWindow()) {
+            announceMatchStart();
+        }
         startNewRound(localStarts, matchStartEpochMs, waitForInitialKickoff);
     }
 
@@ -230,12 +238,13 @@ public class GameController implements AiController.Delegate {
         ui.onlineActionAckPending = false;
         ui.onlineKickoffGeneration = 0;
         ui.matchBannerDismissAllowedAtMs = 0L;
+        matchStartAnnounced = false;
         setPlayerLabels("HOME", "AWAY");
         tutorialMode = true;
         state.homeScore = 0;
         state.awayScore = 0;
         state.matchStartElapsedMs = timeSource.nowElapsedMs();
-        state.matchDurationMs = 3L * 60L * 1000L;
+        state.matchDurationMs = MATCH_DURATION_MS;
         state.matchOver = false;
         state.suddenDeath = false;
 
@@ -282,6 +291,7 @@ public class GameController implements AiController.Delegate {
 
         turnEngine.resetTurnTimer();
         turnEngine.setTurnState(TurnEngine.TurnState.PLAYER);
+        announceMatchStart();
 
         requestLayoutAndInvalidate();
     }
@@ -615,22 +625,29 @@ public class GameController implements AiController.Delegate {
 
         long now = timeSource.nowUptimeMs();
         RulesEngine.PhaseResolution resolution = rules.resolvePhase(state);
+        boolean phaseProducedTry = resolution.homeTry || resolution.awayTry;
 
         if (resolution.outcome == RulesEngine.PhaseOutcome.YOU_WIN) {
             showBanner("YOU WIN THE PHASE", now, 1500);
             triggerFlash(0xFF50C878, 420);
             sound.playTone(ToneGenerator.TONE_PROP_BEEP2, 160);
-            announce(AnnouncerEvent.Type.PHASE_RESULT, AnnouncerEvent.Side.HOME, false);
+            if (!phaseProducedTry) {
+                announce(AnnouncerEvent.Type.PHASE_RESULT, AnnouncerEvent.Side.HOME, false);
+            }
         } else if (resolution.outcome == RulesEngine.PhaseOutcome.OPP_WIN) {
             showBanner("YOU LOSE THE PHASE", now, 1500);
             triggerFlash(0xFFDC5050, 420);
             sound.playTone(ToneGenerator.TONE_PROP_NACK, 200);
-            announce(AnnouncerEvent.Type.PHASE_RESULT, AnnouncerEvent.Side.AWAY, false);
+            if (!phaseProducedTry) {
+                announce(AnnouncerEvent.Type.PHASE_RESULT, AnnouncerEvent.Side.AWAY, false);
+            }
         } else {
             showBanner("TIE", now, 1500);
             triggerFlash(0xFFA0A0A0, 320);
             sound.playTone(ToneGenerator.TONE_PROP_BEEP, 140);
-            announce(AnnouncerEvent.Type.PHASE_RESULT, AnnouncerEvent.Side.NONE, false);
+            if (!phaseProducedTry) {
+                announce(AnnouncerEvent.Type.PHASE_RESULT, AnnouncerEvent.Side.NONE, false);
+            }
         }
 
         if (resolution.homeTry) {
@@ -886,12 +903,25 @@ public class GameController implements AiController.Delegate {
     }
 
     public void requestLayoutAndInvalidate() {
-        layoutCalculator.layoutAll(layoutSpec, state);
+        if (layoutCalculator != null && layoutSpec != null) {
+            layoutCalculator.layoutAll(layoutSpec, state);
+        }
         uiCallbacks.invalidate();
     }
 
     private void announce(AnnouncerEvent.Type type, AnnouncerEvent.Side side, boolean critical) {
         announce(type, side, null, critical);
+    }
+
+    private void announceMatchStart() {
+        if (matchStartAnnounced) return;
+        matchStartAnnounced = true;
+        announce(AnnouncerEvent.Type.MATCH_START, AnnouncerEvent.Side.NONE, false);
+    }
+
+    private boolean isFreshMatchStartWindow() {
+        if (state.matchStartElapsedMs <= 0L) return false;
+        return matchEngine.getMatchElapsedMs(state) <= MATCH_START_ANNOUNCE_WINDOW_MS;
     }
 
     private void announce(AnnouncerEvent.Type type, AnnouncerEvent.Side side, Card card, boolean critical) {
@@ -939,7 +969,9 @@ public class GameController implements AiController.Delegate {
         nextPhaseStartsPlayer = currentPhaseStartsPlayer;
 
         matchEngine.realignMatchElapsedMs(state, matchElapsedMs);
-        turnEngine.resetTurnTimerFromRemainingMs(turnRemainingMs);
+        if (turnEngine.isTurnTimeoutEnabled() && turnRemainingMs >= 0L) {
+            turnEngine.resetTurnTimerFromRemainingMs(turnRemainingMs);
+        }
         turnEngine.setTurnState(localTurn ? TurnEngine.TurnState.PLAYER : TurnEngine.TurnState.AI_THINKING);
         requestLayoutAndInvalidate();
     }
@@ -1009,6 +1041,9 @@ public class GameController implements AiController.Delegate {
             elapsedSinceKickoff = Math.max(0L, System.currentTimeMillis() - kickoffEpochMs);
         }
         matchEngine.realignMatchElapsedMs(state, elapsedSinceKickoff);
+        if (isFreshMatchStartWindow()) {
+            announceMatchStart();
+        }
         startPhaseWithStarter(onlineInitialKickoffStarterHome, kickoffEpochMs);
     }
 

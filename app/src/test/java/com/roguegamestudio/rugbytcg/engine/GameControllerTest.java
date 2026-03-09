@@ -1,5 +1,8 @@
 package com.roguegamestudio.rugbytcg.engine;
 
+import com.roguegamestudio.rugbytcg.CardId;
+import com.roguegamestudio.rugbytcg.PhaseBonus;
+import com.roguegamestudio.rugbytcg.PlayerCard;
 import com.roguegamestudio.rugbytcg.audio.SoundController;
 import com.roguegamestudio.rugbytcg.core.GameState;
 import com.roguegamestudio.rugbytcg.ui.UiState;
@@ -10,6 +13,7 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class GameControllerTest {
@@ -73,6 +77,79 @@ public class GameControllerTest {
         assertEquals("AI WINS 5-10", state.bannerText);
     }
 
+    @Test
+    public void confirmLocalEndTurnAtServerTime_onlineMatchStartsOpponentTurnAndClearsAck() {
+        FakeTimeSource time = new FakeTimeSource();
+        time.uptimeMs = 5_000L;
+
+        GameState state = new GameState();
+        UiState ui = new UiState();
+
+        GameController controller = new GameController(
+                state,
+                ui,
+                null,
+                null,
+                time,
+                new NoOpUiCallbacks(),
+                new SoundController()
+        );
+
+        controller.startOnlineMatch(true, System.currentTimeMillis());
+        assertEquals(TurnEngine.TurnState.PLAYER, controller.getTurnEngine().getTurnState());
+
+        ui.onlineActionAckPending = true;
+        controller.confirmLocalEndTurnAtServerTime(System.currentTimeMillis());
+
+        assertFalse(ui.onlineActionAckPending);
+        assertEquals(TurnEngine.TurnState.AI_THINKING, controller.getTurnEngine().getTurnState());
+    }
+
+    @Test
+    public void onEndTurn_whenAwayWinsPhase_startsOpponentNextPhase() {
+        FakeTimeSource time = new FakeTimeSource();
+        time.uptimeMs = 8_000L;
+
+        GameState state = new GameState();
+        UiState ui = new UiState();
+        RecordingUiCallbacks uiCallbacks = new RecordingUiCallbacks();
+
+        GameController controller = new GameController(
+                state,
+                ui,
+                null,
+                null,
+                time,
+                uiCallbacks,
+                new SoundController()
+        );
+
+        controller.startNewRound(false);
+        uiCallbacks.clearDelayed();
+
+        controller.onAiTurnComplete();
+        assertEquals(TurnEngine.TurnState.PLAYER, controller.getTurnEngine().getTurnState());
+
+        state.yourBoard.clear();
+        state.oppBoard.clear();
+        state.oppBoard.add(new PlayerCard(
+                CardId.PROP,
+                "Prop",
+                "",
+                3,
+                1,
+                4,
+                (matchState, self) -> new PhaseBonus()
+        ));
+
+        controller.onEndTurn();
+
+        assertEquals(TurnEngine.TurnState.AI_THINKING, controller.getTurnEngine().getTurnState());
+        assertTrue(uiCallbacks.delayedCount() >= 1);
+        assertEquals(900L, uiCallbacks.lastDelayMs);
+        assertNotNull(uiCallbacks.lastDelayedRunnable);
+    }
+
     private static final class FakeTimeSource implements TimeSource {
         long uptimeMs;
 
@@ -87,7 +164,7 @@ public class GameControllerTest {
         }
     }
 
-    private static final class NoOpUiCallbacks implements UiCallbacks {
+    private static class NoOpUiCallbacks implements UiCallbacks {
         @Override
         public void invalidate() {
         }
@@ -111,6 +188,29 @@ public class GameControllerTest {
         @Override
         public boolean isAttachedToWindow() {
             return true;
+        }
+    }
+
+    private static final class RecordingUiCallbacks extends NoOpUiCallbacks {
+        Runnable lastDelayedRunnable;
+        long lastDelayMs = -1L;
+        int delayedCount = 0;
+
+        @Override
+        public void postDelayed(Runnable r, long delayMs) {
+            lastDelayedRunnable = r;
+            lastDelayMs = delayMs;
+            delayedCount++;
+        }
+
+        void clearDelayed() {
+            lastDelayedRunnable = null;
+            lastDelayMs = -1L;
+            delayedCount = 0;
+        }
+
+        int delayedCount() {
+            return delayedCount;
         }
     }
 }

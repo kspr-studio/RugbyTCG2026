@@ -37,13 +37,6 @@ public final class AnnouncerPlaylistBuilder {
                 }
                 break;
             case CARD_PLAYED:
-                if (event.side == AnnouncerEvent.Side.HOME) {
-                    clips.add(path("home_plays.wav"));
-                } else if (event.side == AnnouncerEvent.Side.AWAY) {
-                    clips.add(path("away_plays.wav"));
-                } else {
-                    return Collections.emptyList();
-                }
                 if (!addCardClip(event.cardId, clips)) {
                     return Collections.emptyList();
                 }
@@ -67,9 +60,9 @@ public final class AnnouncerPlaylistBuilder {
                 } else {
                     return Collections.emptyList();
                 }
-                addScoreBlock(event.homeScore, event.awayScore, clips);
                 break;
             case MATCH_END:
+                clips.add(path("kickoff.wav"));
                 clips.add(path("full_time.wav"));
                 if (event.side == AnnouncerEvent.Side.HOME) {
                     clips.add(path("home_wins.wav"));

@@ -43,11 +43,9 @@ public class MatchEngine {
         if (elapsedMs < state.matchDurationMs) return MatchEnd.NONE;
 
         if (state.homeScore != state.awayScore) {
-            state.matchOver = true;
             return (state.homeScore > state.awayScore) ? MatchEnd.HOME_WINS : MatchEnd.AWAY_WINS;
         }
 
-        state.matchOver = true;
         return MatchEnd.TIE;
     }
 }

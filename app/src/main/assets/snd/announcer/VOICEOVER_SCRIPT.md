@@ -24,6 +24,12 @@ All clips are loaded from `assets/snd/announcer/`.
 | `home.wav` | Home. |
 | `away.wav` | Away. |
 
+## Runtime Sequencing Notes
+
+- Card play announcements currently use only the card-name clip (`card_*.wav`), without `home_plays.wav`/`away_plays.wav`.
+- Try announcements currently use only `home_scores_try.wav`/`away_scores_try.wav`.
+- Numeric score callouts (`score.wav`, `home.wav`, `away.wav`, `num_*.wav`) are currently used at match end.
+
 ## Card Name Clips
 
 | File | Spoken line |

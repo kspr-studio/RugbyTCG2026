@@ -1,0 +1,5 @@
+node_modules/
+.bot.log
+.bot.pid
+.bot-session.json
+.bot-state.json

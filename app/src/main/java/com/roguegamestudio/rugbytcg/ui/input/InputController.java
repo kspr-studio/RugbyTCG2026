@@ -280,7 +280,28 @@ public class InputController {
                     return true;
                 }
                 if (state.matchOver) {
+                    if (dragState.pressedCard != null) {
+                        ui.inspectCard = dragState.pressedCard.card;
+                        ui.showInspect = true;
+                        ui.inspectFromLog = false;
+                        ui.inspectOpponent = false;
+                        dragState.pressedCard = null;
+                        dragState.pressedBoardCard = null;
+                        uiCallbacks.invalidate();
+                        return true;
+                    }
+                    if (dragState.pressedBoardCard != null) {
+                        ui.inspectCard = dragState.pressedBoardCard.card;
+                        ui.showInspect = true;
+                        ui.inspectFromLog = false;
+                        ui.inspectOpponent = state.oppBoard.contains(dragState.pressedBoardCard.card);
+                        dragState.pressedCard = null;
+                        dragState.pressedBoardCard = null;
+                        uiCallbacks.invalidate();
+                        return true;
+                    }
                     dragState.pressedCard = null;
+                    dragState.pressedBoardCard = null;
                     return true;
                 }
                 if (turnEngine.getTurnState() != TurnEngine.TurnState.PLAYER) return false;
@@ -301,6 +322,10 @@ public class InputController {
                         String msg;
                         if (result.failReason == RulesEngine.PlayFailReason.NO_BOARD) {
                             msg = "FIELD A PLAYER";
+                        } else if (result.failReason == RulesEngine.PlayFailReason.QUICK_PASS_NEEDS_TWO_PLAYERS) {
+                            msg = "NEED 2 PLAYERS";
+                        } else if (result.failReason == RulesEngine.PlayFailReason.TIGHT_PLAY_NEEDS_THREE_PLAYERS) {
+                            msg = "NEED 3 PLAYERS";
                         } else if (result.failReason == RulesEngine.PlayFailReason.DRIVE_USED) {
                             msg = "ONE PER TURN";
                         } else {

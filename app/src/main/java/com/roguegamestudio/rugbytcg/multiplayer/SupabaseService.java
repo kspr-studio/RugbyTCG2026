@@ -439,7 +439,7 @@ public class SupabaseService {
         if (isBlank(accessToken) || isBlank(matchId)) return null;
         Uri uri = Uri.parse(baseUrl + "/rest/v1/matches").buildUpon()
                 .appendQueryParameter("id", "eq." + matchId)
-                .appendQueryParameter("select", "id,status,player_a,player_b,winner_user_id")
+                .appendQueryParameter("select", "id,status,player_a,player_b,winner_user_id,canonical_state")
                 .appendQueryParameter("limit", "1")
                 .build();
         JSONArray rows = getJsonArray(uri.toString(), accessToken);
@@ -450,7 +450,8 @@ public class SupabaseService {
                 row.optString("status", ""),
                 row.optString("player_a", ""),
                 row.optString("player_b", ""),
-                row.optString("winner_user_id", "")
+                row.optString("winner_user_id", ""),
+                parseJsonPayload(row, "canonical_state")
         );
     }
 
@@ -955,13 +956,20 @@ public class SupabaseService {
         public final String playerA;
         public final String playerB;
         public final String winnerUserId;
+        public final JSONObject canonicalState;
 
-        public MatchSnapshot(String matchId, String status, String playerA, String playerB, String winnerUserId) {
+        public MatchSnapshot(String matchId,
+                             String status,
+                             String playerA,
+                             String playerB,
+                             String winnerUserId,
+                             JSONObject canonicalState) {
             this.matchId = matchId;
             this.status = status;
             this.playerA = playerA;
             this.playerB = playerB;
             this.winnerUserId = winnerUserId;
+            this.canonicalState = canonicalState != null ? canonicalState : new JSONObject();
         }
     }
 }

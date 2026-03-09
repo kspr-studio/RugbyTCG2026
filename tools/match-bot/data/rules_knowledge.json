@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "generatedAtIso": "2026-03-04T17:32:32.451Z",
+  "sources": {
+    "rulesPdf": "C:/Users/Rickesh Singh/Desktop/RugbyTCG-Rules.pdf",
+    "cardsPdf": "C:/Users/Rickesh Singh/Desktop/RugbyTCG-Cards.pdf"
+  },
+  "strategyPrinciples": [
+    "Prioritize legal moves that improve immediate phase totals.",
+    "Do not auto-end turn solely because score is behind.",
+    "Preserve deterministic fallback behavior whenever model output is invalid."
+  ],
+  "rulesSummary": [
+    "The goal is to have scored the most TRYs at the end of the match.",
+    "A match is 3 minutes and comprises of rounds.",
+    "Rounds comprises of several phases.",
+    "A single phase is 10 seconds.",
+    "Each player gets 1 phase before they begin contesting.",
+    "The player with the highest phase total wins the contest.",
+    "To increase your phase total, play cards.",
+    "You have 8 momentum per phase.",
+    "Cards cost momentum to play.",
+    "When a phase completes, player cards in play lose stamina.",
+    "Winning a phase pushes the ball position +1 in your favor.",
+    "A round is won when either player gets the ball position to +3 in their favor.",
+    "Winning a round scores you a TRY, giving you +5 points.",
+    "Whoever scored more TRYs (has the most points) wins the match.",
+    "There are 2 kinds of cards:",
+    "PLAYER -> Cost is in the top-right, which is also the card's POWER.",
+    "Usually has a special effect, except for PROP.",
+    "When on the field, has a stamina bar at the top of the card.",
+    "When the stamina bar turns red, they are on their last phase and will be",
+    "removed from play the following turn.",
+    "TACTIC/PLAY -> Cost is in the middle-left. Requires you have a PLAYER card",
+    "on the field. Performs a special effect when played.",
+    "May be limited to 1 per phase, such as DRIVE.",
+    "Winning a phase pushes the ball position +1."
+  ],
+  "cardGuidance": {
+    "FLANKER": {
+      "type": "player",
+      "cost": 4,
+      "heuristics": [
+        "Play when it improves immediate projected phase total."
+      ],
+      "source_lines": [
+        "Player —Flanker —3 —+1 PWR while contesting."
+      ]
+    },
+    "PROP": {
+      "type": "player",
+      "cost": 4,
+      "heuristics": [
+        "Play when it improves immediate projected phase total."
+      ],
+      "source_lines": [
+        "Player —Prop —4 —Straight-up power.",
+        "Usually has a special effect, except for PROP."
+      ]
+    },
+    "PLAYMAKER": {
+      "type": "player",
+      "cost": 4,
+      "heuristics": [
+        "Provides flexible value and can improve follow-up turns."
+      ],
+      "source_lines": [
+        "Player —Playmaker —1 —Gain +1 Momentum next turn."
+      ]
+    },
+    "BREAKER": {
+      "type": "player",
+      "cost": 5,
+      "heuristics": [
+        "Play when it improves immediate projected phase total."
+      ],
+      "source_lines": [
+        "Player —Breaker —2 —If you win the phase, push the ball +1 extra."
+      ]
+    },
+    "ANCHOR": {
+      "type": "player",
+      "cost": 2,
+      "heuristics": [
+        "Low-cost stabilizer; useful when tempo or momentum is tight."
+      ],
+      "source_lines": [
+        "Player —Anchor —2 —Lose 1 less STA when you lose a phase."
+      ]
+    },
+    "OPPORTUNIST": {
+      "type": "player",
+      "cost": 3,
+      "heuristics": [
+        "Play when it improves immediate projected phase total."
+      ],
+      "source_lines": []
+    },
+    "COUNTER_RUCK": {
+      "type": "play",
+      "cost": 2,
+      "heuristics": [
+        "Best when trailing on score/phase pressure.",
+        "Lower value when already ahead."
+      ],
+      "source_lines": [
+        "Play —Counter Ruck —2 —If you lost last phase, gain +3 PWR this phase."
+      ]
+    },
+    "QUICK_PASS": {
+      "type": "play",
+      "cost": 2,
+      "heuristics": [
+        "Boosts temporary skill and phase total immediately.",
+        "Strong when board already has at least one player."
+      ],
+      "source_lines": [
+        "Play —Quick Pass —2 —+2 SKL this phase."
+      ]
+    },
+    "DRIVE": {
+      "type": "play",
+      "cost": 3,
+      "heuristics": [
+        "Use once per turn to shift ball position toward attack.",
+        "Avoid wasting when already at best ball position."
+      ],
+      "source_lines": [
+        "Play —Drive —3 —Push the ball +1 immediately.",
+        "May be limited to 1 per phase, such as DRIVE."
+      ]
+    },
+    "TIGHT_PLAY": {
+      "type": "tactic",
+      "cost": 4,
+      "heuristics": [
+        "Persistent pressure tool; avoid duplicate casts in same phase.",
+        "Most useful when you expect multiple board contests."
+      ],
+      "source_lines": [
+        "Tactic —Tight Play —4 —+1 PWR to your players this phase, but they lose"
+      ]
+    }
+  }
+}

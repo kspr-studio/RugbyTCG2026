@@ -111,7 +111,7 @@ public final class StarterDeck {
 
         // 10) Tight Play (Tactic): +1 PWR to all players, but STA drains faster
         deck.add(new TacticCard(
-                CardId.TIGHT_PLAY, "Tight Play", "+1 PWR to your players this phase, but they lose +1 extra STA.",
+                CardId.TIGHT_PLAY, "Tight Play", "Requires 3 players. +1 PWR to your players this phase, but they lose +1 extra STA.",
                 4,
                 new TacticEffect() {
                     @Override public void onActivate(GameState ctx, boolean forYou) {

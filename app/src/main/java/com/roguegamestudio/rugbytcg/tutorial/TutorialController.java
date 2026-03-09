@@ -53,7 +53,7 @@ public class TutorialController {
 
     public void start() {
         active = true;
-        step = TUT_INTRO;
+        step = TUT_FINISH;
         flankerInspected = false;
     }
 
@@ -287,7 +287,7 @@ public class TutorialController {
             case TUT_HAND_STAMINA:
                 return "PLAYER cards have a STAMINA bar at the top of the card. If it depletes, the card is removed from play.";
             case TUT_HAND_POWER:
-                return "A PLAYER card costs it's POWER, which is a sum of hidden STRENGTH and SKILL values.";
+                return "A PLAYER card's POWER is shown in the top-right. This contributes to your total POWER for the phase.";
             case TUT_MOMENTUM_USED:
                 return "FLANKER has just consumed 4 MOMENTUM.";
             case TUT_INSPECT:

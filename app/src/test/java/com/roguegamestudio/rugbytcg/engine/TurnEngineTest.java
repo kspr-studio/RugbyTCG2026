@@ -28,6 +28,7 @@ public class TurnEngineTest {
 
         TurnEngine engine = new TurnEngine(time);
         engine.setTurnDurationMs(10_000L);
+        engine.setTurnTimeoutEnabled(true);
         engine.resetTurnTimerAtElapsed(1_000L);
 
         assertFalse(engine.shouldTimeout());

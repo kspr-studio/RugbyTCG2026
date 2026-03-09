@@ -1,0 +1,16 @@
+{
+  "name": "rugbytcg-match-bot",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "extract-knowledge": "node ./scripts/extract-knowledge.mjs",
+    "install-ollama-model": "powershell -ExecutionPolicy Bypass -File ./install-ollama-model.ps1 -UpdateLocalProperties"
+  },
+  "dependencies": {
+    "pdf-parse": "^1.1.1"
+  }
+}
